@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SHRUUM's StageBuilder</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">SHRUUM's StageBuilder</div>
+    <div class="actions">
+      <button id="newStageBtn">Neue Stage</button>
+      <button id="saveStageBtn" class="primary">Speichern</button>
+      <button id="loadStageBtn">Laden</button>
+      <button id="duplicateStageBtn">Duplizieren</button>
+      <button id="pdfBtn">PDF Export</button>
+      <button id="jsonExportBtn">JSON Export</button>
+      <button id="jsonImportBtn">JSON Import</button>
+      <button id="settingsBtn">PDF Einstellungen</button>
+      <button id="rangesBtn">Schiesskeller verwalten</button>
+      <input id="jsonFile" type="file" accept="application/json" hidden>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <aside class="toolbar" aria-label="Objekte">
+      <button data-tool="select" class="active" title="Auswählen"><span>⌖</span><small>Auswahl</small></button>
+      <button data-add="wall" title="Wand"><span>▰</span><small>Wand</small></button>
+      <button data-add="backstop" title="Mobiler Kugelfang"><span>▣</span><small>Fang</small></button>
+      <button data-add="target" title="Scheibe"><span>◎</span><small>Scheibe</small></button>
+      <button data-add="noShoot" title="No-Shoot"><span>⊗</span><small>No-Shoot</small></button>
+      <button data-add="start" title="Startposition"><span>⚑</span><small>Start</small></button>
+      <button data-add="barrel" title="Fass"><span>⬤</span><small>Fass</small></button>
+      <button data-add="cone" title="Pylone"><span>▲</span><small>Pylone</small></button>
+      <button data-add="barricade" title="Barrikade"><span>▥</span><small>Barrikade</small></button>
+      <button data-add="light" title="Licht"><span>⚡</span><small>Licht</small></button>
+      <button data-add="note" title="Notiz"><span>✎</span><small>Notiz</small></button>
+      <button data-add="arrow" title="Pfeil"><span>➜</span><small>Pfeil</small></button>
+      <button data-add="marker" title="Positionsmarker"><span>⌖</span><small>P-Marker</small></button>
+    </aside>
+
+    <section class="workspace">
+      <div class="editor-head">
+        <label>Schiesskeller
+          <select id="rangeSelect"></select>
+        </label>
+        <div class="object-actions" aria-label="Objekt Schnellaktionen">
+          <button id="rotateLeftBtn" type="button" title="Q">-15°</button>
+          <button id="rotateRightBtn" type="button" title="E">+15°</button>
+          <button id="duplicateObjectBtn" type="button" title="Ctrl+D">Duplizieren</button>
+          <button id="deleteObjectBtn" type="button" title="Delete">Löschen</button>
+        </div>
+        <span id="statusText" role="status"></span>
+      </div>
+      <div class="canvas-wrap">
+        <svg id="stageSvg" role="img" aria-label="Stageeditor"></svg>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <nav class="sidebar-tabs" aria-label="Seitenleiste">
+        <button type="button" class="active" data-tab="training">Training</button>
+        <button type="button" data-tab="object">Objekt</button>
+        <button type="button" data-tab="magazines">Magazine</button>
+      </nav>
+
+      <div class="tab-panel active" data-tab-panel="training">
+      <section class="panel">
+        <h2>Stage</h2>
+        <label>Stage-Name<input id="stageName"></label>
+        <label>Version<input id="stageVersion" placeholder="v1.0" readonly></label>
+        <label>Kurzbeschreibung<textarea id="description" rows="2"></textarea></label>
+        <label>Trainingsziel<textarea id="trainingGoal" rows="2"></textarea></label>
+        <label>Ablaufbeschreibung<textarea id="procedure" rows="4"></textarea></label>
+        <label>Sicherheitsnotizen<textarea id="safetyNotes" rows="3"></textarea></label>
+        <div class="grid2">
+          <label>Trainingsart<select id="trainingType">
+            <option value="statisch">Statisch</option>
+            <option value="dynamisch">Dynamisch</option>
+            <option value="kombiniert">Kombiniert</option>
+          </select></label>
+          <label>Waffe<select id="weaponType">
+            <option value="kurzwaffe">Kurzwaffe</option>
+            <option value="langwaffe">Langwaffe</option>
+            <option value="kurzwaffe_langwaffe">Kurzwaffe + Langwaffe</option>
+          </select></label>
+        </div>
+        <label id="handgunStartWrap">Start Kurzwaffe<select id="startPositionHandgun">
+          <option>Holster</option><option>Low Ready</option><option>High Ready</option>
+          <option>Compact Ready</option><option>auf Tisch</option><option>andere</option>
+        </select></label>
+        <label id="longGunStartWrap">Start Langwaffe<select id="startPositionLongGun">
+          <option>Low Ready</option><option>High Ready</option><option>Compressed Ready</option>
+          <option>hängend am Sling</option><option>auf Tisch</option><option>geschultert</option><option>andere</option>
+        </select></label>
+      </section>
+
+      <section class="panel">
+        <h2>Schwerpunkte</h2>
+        <div id="focusGrid" class="check-grid"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Schwierigkeit</h2>
+        <div class="difficulty-line"><b id="difficultyCalculated">Leicht</b><span id="difficultyReasons"></span></div>
+        <label class="check-row"><input id="difficultyOverrideEnabled" type="checkbox"> manuell überschreiben</label>
+        <label id="manualDifficultyWrap">Manuelle Stufe<select id="difficultyManual">
+          <option value="">-</option><option>Leicht</option><option>Mittel</option><option>Schwer</option>
+        </select></label>
+      </section>
+
+      <section class="panel">
+        <h2>Munition</h2>
+        <label class="check-row"><input id="ammoAutoCalculate" type="checkbox"> automatisch berechnen</label>
+        <div class="grid2">
+          <label>Anzahl Scheiben<input id="targetCount" type="number" min="0" step="1" readonly></label>
+          <label>Schüsse pro Scheibe<input id="roundsPerTarget" type="number" min="1" step="1"></label>
+          <label>Schuss pro Durchgang<input id="roundsPerRun" type="number" min="0" step="1"></label>
+          <label>Durchgänge<input id="runs" type="number" min="1" step="1"></label>
+        </div>
+        <div class="total-line">Total pro Schütze: <b id="roundsTotal">0</b></div>
+        <label>Munitionsnotiz<textarea id="manualAmmoNote" rows="2"></textarea></label>
+      </section>
+      </div>
+
+      <div class="tab-panel" data-tab-panel="magazines">
+      <section class="panel">
+        <h2>Magazine</h2>
+        <div id="handgunMagWrap" class="mag-section">
+          <label>Kurzwaffe Magazine<input id="handgunMagCount" type="number" min="0" step="1"></label>
+          <div id="handgunMags"></div>
+        </div>
+        <div id="longGunMagWrap" class="mag-section">
+          <label>Langwaffe Magazine<input id="longGunMagCount" type="number" min="0" step="1"></label>
+          <div id="longGunMags"></div>
+        </div>
+      </section>
+      </div>
+
+      <div class="tab-panel" data-tab-panel="object">
+      <section class="panel">
+        <h2>Objekt</h2>
+        <div id="objectForm" class="object-form muted">Kein Objekt ausgewählt</div>
+      </section>
+      </div>
+    </aside>
+  </main>
+
+  <dialog id="rangeDialog" class="dialog-wide">
+    <form method="dialog">
+      <header><h2>Schiesskeller verwalten</h2><button value="cancel">×</button></header>
+      <div class="dialog-grid">
+        <div>
+          <div id="rangeList" class="list"></div>
+          <button id="newRangeBtn" type="button">Neuer Schiesskeller</button>
+          <button id="deleteRangeBtn" type="button">Löschen</button>
+        </div>
+        <div class="range-form">
+          <label>Name<input id="rangeName"></label>
+          <label>Beschreibung<textarea id="rangeDescription" rows="2"></textarea></label>
+          <div class="grid2">
+            <label>Breite m<input id="rangeWidth" type="number" min="1" step="1"></label>
+            <label>Länge m<input id="rangeHeight" type="number" min="1" step="1"></label>
+            <label>Raster m<input id="rangeGrid" type="number" min="0.5" step="0.5"></label>
+            <label>Massstab px/m<input id="rangePpm" type="number" min="10" step="1"></label>
+          </div>
+          <label>Notizen / Einschränkungen<textarea id="rangeNotes" rows="2"></textarea></label>
+          <div class="boundary-editor">
+            <div class="boundary-title">Rand-Kugelfänge meterweise anklicken</div>
+            <svg id="boundarySvg"></svg>
+          </div>
+          <div class="dialog-actions">
+            <button id="saveRangeBtn" type="button" class="primary">Schiesskeller speichern</button>
+            <button value="ok">Schliessen</button>
+          </div>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="loadDialog">
+    <form method="dialog">
+      <header><h2>Stage laden</h2><button value="cancel">×</button></header>
+      <div id="stageList" class="list"></div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog">
+    <form method="dialog">
+      <header><h2>PDF Einstellungen</h2><button value="cancel">×</button></header>
+      <label>Author<input id="settingAuthorName" placeholder="Author: Jannis"></label>
+      <label>Custom Footer Text<input id="settingFooterText" placeholder="Internal Training Use Only"></label>
+      <label>Standard-Version<input id="settingDefaultVersion" placeholder="v1.0"></label>
+      <div class="dialog-actions">
+        <button id="saveSettingsBtn" type="button" class="primary">Einstellungen speichern</button>
+        <button value="ok">Schliessen</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    window.SYMBOL_CONTRACT = {{ symbol_contract|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
