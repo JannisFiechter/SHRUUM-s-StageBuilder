@@ -54,23 +54,25 @@
       <button data-tool="select" class="active" title="Auswählen"><span>⌖</span><small>Auswahl</small></button>
       <button data-add="wall" title="Wand"><span>▰</span><small>Wand</small></button>
       <button data-add="backstop" title="Mobiler Kugelfang"><span>▣</span><small>Fang</small></button>
-      <button data-add="start" title="Startposition"><span>⚑</span><small>Start</small></button>
+      <button data-add="start" title="Startmarkierung"><span>⚑</span><small>Start</small></button>
       <button data-add="note" title="Notiz"><span>✎</span><small>Notiz</small></button>
       <button data-add="arrow" title="Pfeil"><span>➜</span><small>Pfeil</small></button>
       <button data-add="marker" title="Positionsmarker"><span>⌖</span><small>P-Marker</small></button>
-      <div class="toolbar-group-title">Targets</div>
-      <button data-add="target" title="Scheibe"><span>◎</span><small>Scheibe</small></button>
-      <button data-add="popper" title="Popper"><span>▯</span><small>Popper</small></button>
-      <button data-add="steelPlate" title="Steel Plate"><span>◍</span><small>Plate</small></button>
-      <button data-add="swinger" title="Swinger"><span>◜</span><small>Swinger</small></button>
-      <button data-add="mover" title="Mover"><span>↔</span><small>Mover</small></button>
-      <button data-add="plateRack" title="Plate Rack"><span>≡</span><small>Rack</small></button>
-      <button data-add="activator" title="Activator"><span>✦</span><small>Activator</small></button>
-      <div class="toolbar-group-title">Props</div>
-      <button data-add="barrel" title="Fass"><span>⬤</span><small>Fass</small></button>
-      <button data-add="cone" title="Pylone"><span>▲</span><small>Pylone</small></button>
-      <button data-add="barricade" title="Barrikade"><span>▥</span><small>Barrikade</small></button>
-      <button data-add="light" title="Licht"><span>⚡</span><small>Licht</small></button>
+      <button type="button" class="toolbar-collapse-toggle" data-collapse-toggle="targets" aria-expanded="true">Targets ▾</button>
+      <div class="toolbar-collapsible open" data-collapse-group="targets">
+        <button data-add="target" title="Scheibe"><span>◎</span><small>Scheibe</small></button>
+        <button data-add="popper" title="Popper"><span>▯</span><small>Popper</small></button>
+        <button data-add="steelPlate" title="Steel Plate"><span>◍</span><small>Plate</small></button>
+        <button data-add="plateRack" title="Plate Rack"><span>≡</span><small>Rack</small></button>
+        <button data-add="activator" title="Activator"><span>✦</span><small>Activator</small></button>
+      </div>
+      <button type="button" class="toolbar-collapse-toggle" data-collapse-toggle="props" aria-expanded="false">Props ▸</button>
+      <div class="toolbar-collapsible" data-collapse-group="props">
+        <button data-add="barrel" title="Fass"><span>⬤</span><small>Fass</small></button>
+        <button data-add="cone" title="Pylone"><span>▲</span><small>Pylone</small></button>
+        <button data-add="barricade" title="Barrikade"><span>▥</span><small>Barrikade</small></button>
+        <button data-add="light" title="Licht"><span>⚡</span><small>Licht</small></button>
+      </div>
     </aside>
 
     <section class="workspace">

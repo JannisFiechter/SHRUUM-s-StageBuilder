@@ -8,7 +8,6 @@ const targetVariants = [
   { value: "full", label: "Voll" },
   { value: "no-shoot", label: "No-Shoot" },
   { value: "half", label: "Halbe Scheibe" },
-  { value: "partial", label: "Teilverdeckt" },
   { value: "head-only", label: "Nur Kopf" },
   { value: "custom", label: "Custom" }
 ];
@@ -28,6 +27,7 @@ const symbolTheme = Object.fromEntries(Object.entries(symbolContract.objects).ma
   key,
   { fill: spec.fill, stroke: spec.stroke, accent: spec.accent }
 ]));
+const hiddenObjectTypes = new Set(["swinger", "mover"]);
 
 const $ = (id) => document.getElementById(id);
 const ns = "http://www.w3.org/2000/svg";
@@ -143,6 +143,7 @@ function markDirty() {
 async function init() {
   buildFocusGrid();
   bindEvents();
+  initToolbarGroups();
   await loadSettings();
   await loadRanges();
   await loadStages();
@@ -155,6 +156,34 @@ async function init() {
   updateTopbarMeta();
   setSaveState("saved", "Gespeichert");
   setStatus(activeRange ? "Bereit" : "Bitte zuerst einen Schiesskeller erstellen");
+}
+
+function initToolbarGroups() {
+  const defaults = { targets: true, props: false };
+  const keys = Object.keys(defaults);
+  keys.forEach((key) => {
+    const saved = localStorage.getItem(`toolbar-group-${key}`);
+    const isOpen = saved == null ? defaults[key] : saved === "1";
+    setToolbarGroupState(key, isOpen);
+  });
+  document.querySelectorAll("[data-collapse-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.collapseToggle;
+      const group = document.querySelector(`[data-collapse-group="${key}"]`);
+      const isOpen = !group.classList.contains("open");
+      setToolbarGroupState(key, isOpen);
+      localStorage.setItem(`toolbar-group-${key}`, isOpen ? "1" : "0");
+    });
+  });
+}
+
+function setToolbarGroupState(key, isOpen) {
+  const group = document.querySelector(`[data-collapse-group="${key}"]`);
+  const toggle = document.querySelector(`[data-collapse-toggle="${key}"]`);
+  if (!group || !toggle) return;
+  group.classList.toggle("open", isOpen);
+  toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  toggle.textContent = `${key === "targets" ? "Targets" : "Props"} ${isOpen ? "▾" : "▸"}`;
 }
 
 function bindEvents() {
@@ -311,9 +340,10 @@ function readStageFromForm() {
   currentStage.setupListAuto = $("setupListAuto").checked;
   currentStage.setupListText = $("setupListText").value || "";
   const autoCalculate = $("ammoAutoCalculate").checked;
-  const targetCount = countTargets();
+  const components = ammoComponents();
+  const targetCount = components.baseTargets;
   const roundsPerTarget = Math.max(1, Number($("roundsPerTarget").value || 2));
-  const rounds = autoCalculate ? targetCount * roundsPerTarget : Math.max(0, Number($("roundsPerRun").value || 0));
+  const rounds = autoCalculate ? Math.ceil(targetCount * roundsPerTarget + components.bonusShots) : Math.max(0, Number($("roundsPerRun").value || 0));
   const runs = Math.max(1, Number($("runs").value || 1));
   currentStage.ammo = {
     autoCalculate,
@@ -346,9 +376,10 @@ function renderWeaponDependent() {
 }
 
 function normalizeAmmoState() {
+  const components = ammoComponents();
   currentStage.ammo = {
     autoCalculate: currentStage.ammo.autoCalculate !== false,
-    targetCount: countTargets(),
+    targetCount: components.baseTargets,
     roundsPerTarget: Math.max(1, Number(currentStage.ammo.roundsPerTarget || 2)),
     roundsPerRun: Math.max(0, Number(currentStage.ammo.roundsPerRun || 0)),
     runs: Math.max(1, Number(currentStage.ammo.runs || 1)),
@@ -356,7 +387,7 @@ function normalizeAmmoState() {
     manualAmmoNote: currentStage.ammo.manualAmmoNote || ""
   };
   if (currentStage.ammo.autoCalculate) {
-    currentStage.ammo.roundsPerRun = currentStage.ammo.targetCount * currentStage.ammo.roundsPerTarget;
+    currentStage.ammo.roundsPerRun = Math.ceil(currentStage.ammo.targetCount * currentStage.ammo.roundsPerTarget + components.bonusShots);
   }
   currentStage.ammo.roundsPerShooterTotal = currentStage.ammo.roundsPerRun * currentStage.ammo.runs;
 }
@@ -371,8 +402,24 @@ function renderAmmoFields() {
   $("roundsTotal").textContent = String(currentStage.ammo.roundsPerShooterTotal);
 }
 
+function ammoComponents() {
+  let baseTargets = 0;
+  let bonusShots = 0;
+  (currentStage.objects || []).forEach((obj) => {
+    const variant = ((obj.properties || {}).targetVariant || "full");
+    if ((obj.type === "target" || obj.type === "swinger" || obj.type === "mover") && variant !== "no-shoot") {
+      baseTargets += 1;
+      return;
+    }
+    if (obj.type === "popper") bonusShots += 1;
+    if (obj.type === "steelPlate") bonusShots += 1;
+    if (obj.type === "plateRack") bonusShots += 5;
+  });
+  return { baseTargets, bonusShots };
+}
+
 function countTargets() {
-  return (currentStage.objects || []).filter(obj => obj.type === "target" && ((obj.properties || {}).targetVariant || "full") !== "no-shoot").length;
+  return ammoComponents().baseTargets;
 }
 
 function stageTargetTypeLabel() {
@@ -387,7 +434,7 @@ function targetVariantLabel(obj, withDirection = false) {
   if (variant === "custom") return props.customTargetVariant || "Custom";
   const found = targetVariants.find(v => v.value === variant);
   const base = found ? found.label : "Voll";
-  if (!withDirection || !["half", "partial"].includes(variant)) return base;
+  if (!withDirection || variant !== "half") return base;
   const dir = props.variantDirection || "right";
   const dirLabel = (variantDirections.find(d => d.value === dir) || variantDirections[1]).label.toLowerCase();
   return `${base} ${dirLabel}`;
@@ -419,6 +466,13 @@ function recalculateSetupList(overwriteText) {
         : variant === "no-shoot"
           ? `${stageType}, No-Shoot`
           : `${stageType}, ${targetVariantLabel(obj, true)}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+      return;
+    }
+    if (obj.type === "swinger" || obj.type === "mover") {
+      const variant = (obj.properties && obj.properties.targetVariant) || "full";
+      const base = (objectTypes[obj.type] && objectTypes[obj.type].label) || obj.type;
+      const key = variant === "full" ? base : `${base}, ${targetVariantLabel(obj, true)}`;
       counts.set(key, (counts.get(key) || 0) + 1);
       return;
     }
@@ -657,7 +711,7 @@ function appendObjectSymbol(g, obj, b) {
       g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .32, class: "symbol-mark" }));
       g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .14, class: "symbol-mark" }));
     }
-    appendTargetVariantOverlay(g, obj, b);
+    appendTargetVariantOverlay(g, obj, b, "target");
   } else if (obj.type === "start") {
     g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .08, fill: theme.fill, stroke, "stroke-width": .05 }));
     g.append(el("line", { x1: b.x + b.w * .35, y1: b.y + b.h * .75, x2: b.x + b.w * .35, y2: b.y + b.h * .2, class: "symbol-mark" }));
@@ -680,23 +734,29 @@ function appendObjectSymbol(g, obj, b) {
     g.append(el("polygon", { points: `${b.cx},${b.y} ${b.x + b.w * .72},${b.y + b.h * .2} ${b.x + b.w * .76},${b.y + b.h * .6} ${b.x + b.w * .64},${b.y + b.h * .84} ${b.x + b.w * .36},${b.y + b.h * .84} ${b.x + b.w * .24},${b.y + b.h * .6} ${b.x + b.w * .28},${b.y + b.h * .2}`, fill: theme.fill, stroke, "stroke-width": .04 }));
     g.append(el("rect", { x: b.x + b.w * .42, y: b.y + b.h * .84, width: b.w * .16, height: b.h * .12, fill: theme.fill, stroke, "stroke-width": .04 }));
   } else if (obj.type === "steelPlate") {
-    g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .45, fill: theme.fill, stroke, "stroke-width": .04 }));
+    g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .48, fill: theme.fill, stroke, "stroke-width": .06 }));
   } else if (obj.type === "swinger") {
-    g.append(el("rect", { x: b.x + b.w * .28, y: b.y + b.h * .24, width: b.w * .44, height: b.h * .54, rx: .04, fill: theme.fill, stroke, "stroke-width": .06 }));
+    const variant = ((obj.properties || {}).targetVariant || "full");
+    const swingerFill = variant === "no-shoot" ? "#f8fafc" : theme.fill;
+    g.append(el("rect", { x: b.x + b.w * .24, y: b.y + b.h * .14, width: b.w * .52, height: b.h * .66, rx: .04, fill: swingerFill, stroke, "stroke-width": .06 }));
     g.append(el("rect", { x: b.cx - b.w * .08, y: b.y + b.h * .78, width: b.w * .16, height: b.h * .12, rx: .02, fill: "#111827" }));
     g.append(el("path", { d: `M ${b.x + b.w * .22} ${b.y + b.h * .58} Q ${b.x + b.w * .12} ${b.y + b.h * .5} ${b.x + b.w * .22} ${b.y + b.h * .42}`, fill: "none", stroke: "#111827", "stroke-width": .06 }));
     g.append(el("polygon", { points: `${b.x + b.w * .2},${b.y + b.h * .42} ${b.x + b.w * .25},${b.y + b.h * .43} ${b.x + b.w * .22},${b.y + b.h * .47}`, fill: "#111827" }));
     g.append(el("path", { d: `M ${b.x + b.w * .78} ${b.y + b.h * .42} Q ${b.x + b.w * .88} ${b.y + b.h * .5} ${b.x + b.w * .78} ${b.y + b.h * .58}`, fill: "none", stroke: "#111827", "stroke-width": .06 }));
     g.append(el("polygon", { points: `${b.x + b.w * .8},${b.y + b.h * .58} ${b.x + b.w * .75},${b.y + b.h * .57} ${b.x + b.w * .78},${b.y + b.h * .53}`, fill: "#111827" }));
+    appendTargetVariantOverlay(g, obj, b, "swinger");
   } else if (obj.type === "mover") {
-    g.append(el("rect", { x: b.x + b.w * .28, y: b.y + b.h * .2, width: b.w * .44, height: b.h * .5, rx: .04, fill: theme.fill, stroke, "stroke-width": .06 }));
+    const variant = ((obj.properties || {}).targetVariant || "full");
+    const moverFill = variant === "no-shoot" ? "#f8fafc" : theme.fill;
+    g.append(el("rect", { x: b.x + b.w * .24, y: b.y + b.h * .14, width: b.w * .52, height: b.h * .66, rx: .04, fill: moverFill, stroke, "stroke-width": .06 }));
     g.append(el("line", { x1: b.x + b.w * .16, y1: b.y + b.h * .82, x2: b.x + b.w * .84, y2: b.y + b.h * .82, stroke: "#111827", "stroke-width": .06 }));
     g.append(el("line", { x1: b.x + b.w * .22, y1: b.y + b.h * .9, x2: b.x + b.w * .78, y2: b.y + b.h * .9, stroke: "#111827", "stroke-width": .06 }));
     g.append(el("polygon", { points: `${b.x + b.w * .22},${b.y + b.h * .9} ${b.x + b.w * .29},${b.y + b.h * .86} ${b.x + b.w * .29},${b.y + b.h * .94}`, fill: "#111827" }));
     g.append(el("polygon", { points: `${b.x + b.w * .78},${b.y + b.h * .9} ${b.x + b.w * .71},${b.y + b.h * .86} ${b.x + b.w * .71},${b.y + b.h * .94}`, fill: "#111827" }));
+    appendTargetVariantOverlay(g, obj, b, "mover");
   } else if (obj.type === "plateRack") {
-    for (let i = 0; i < 5; i++) g.append(el("circle", { cx: b.x + b.w * (.14 + i * .18), cy: b.y + b.h * .4, r: Math.min(b.w, b.h) * .13, fill: theme.fill, stroke, "stroke-width": .04 }));
-    g.append(el("line", { x1: b.x + b.w * .06, y1: b.y + b.h * .82, x2: b.x + b.w * .94, y2: b.y + b.h * .82, class: "symbol-mark" }));
+    for (let i = 0; i < 5; i++) g.append(el("circle", { cx: b.x + b.w * (.14 + i * .18), cy: b.y + b.h * .48, r: Math.min(b.w, b.h) * .18, fill: theme.fill, stroke, "stroke-width": .06 }));
+    g.append(el("line", { x1: b.x + b.w * .06, y1: b.y + b.h * .82, x2: b.x + b.w * .94, y2: b.y + b.h * .82, stroke: "#111827", "stroke-width": .06 }));
   } else if (obj.type === "activator") {
     g.append(el("rect", { x: b.x + b.w * .2, y: b.y + b.h * .12, width: b.w * .6, height: b.h * .76, rx: .06, fill: theme.fill, stroke, "stroke-width": .04 }));
     g.append(el("polygon", { points: `${b.cx},${b.y + b.h * .2} ${b.x + b.w * .42},${b.cy} ${b.cx},${b.cy} ${b.x + b.w * .56},${b.y + b.h * .82} ${b.x + b.w * .68},${b.y + b.h * .5} ${b.cx},${b.y + b.h * .5}`, fill: "#111827", stroke: "#111827", "stroke-width": .01 }));
@@ -712,35 +772,33 @@ function appendObjectSymbol(g, obj, b) {
   }
 }
 
-function appendTargetVariantOverlay(g, obj, b) {
+function variantFrame(type, b) {
+  if (type === "swinger") return { x: b.x + b.w * .24, y: b.y + b.h * .14, w: b.w * .52, h: b.h * .66 };
+  if (type === "mover") return { x: b.x + b.w * .24, y: b.y + b.h * .14, w: b.w * .52, h: b.h * .66 };
+  return { x: b.x, y: b.y, w: b.w, h: b.h };
+}
+
+function appendTargetVariantOverlay(g, obj, b, type = "target") {
   const props = obj.properties || {};
   const variant = props.targetVariant || "full";
   const direction = props.variantDirection || "right";
+  const frame = variantFrame(type, b);
   const mask = "#f8fafc";
   if (variant === "half") {
     const ov = direction === "left"
-      ? { x: b.x + b.w * .5, y: b.y, w: b.w * .5, h: b.h }
+      ? { x: frame.x + frame.w * .5, y: frame.y, w: frame.w * .5, h: frame.h }
       : direction === "right"
-        ? { x: b.x, y: b.y, w: b.w * .5, h: b.h }
+        ? { x: frame.x, y: frame.y, w: frame.w * .5, h: frame.h }
         : direction === "top"
-          ? { x: b.x, y: b.y + b.h * .5, w: b.w, h: b.h * .5 }
-          : { x: b.x, y: b.y, w: b.w, h: b.h * .5 };
+          ? { x: frame.x, y: frame.y + frame.h * .5, w: frame.w, h: frame.h * .5 }
+          : { x: frame.x, y: frame.y, w: frame.w, h: frame.h * .5 };
     g.append(el("rect", { x: ov.x, y: ov.y, width: ov.w, height: ov.h, fill: mask, stroke: "none" }));
-  } else if (variant === "partial") {
-    const points = direction === "left"
-      ? `${b.x},${b.y} ${b.x + b.w * .38},${b.y} ${b.x + b.w * .58},${b.y + b.h} ${b.x},${b.y + b.h}`
-      : direction === "right"
-        ? `${b.x + b.w * .42},${b.y} ${b.x + b.w},${b.y} ${b.x + b.w},${b.y + b.h} ${b.x + b.w * .62},${b.y + b.h}`
-        : direction === "top"
-          ? `${b.x},${b.y + b.h * .42} ${b.x + b.w},${b.y + b.h * .18} ${b.x + b.w},${b.y} ${b.x},${b.y}`
-          : `${b.x},${b.y + b.h} ${b.x + b.w},${b.y + b.h} ${b.x + b.w},${b.y + b.h * .58} ${b.x},${b.y + b.h * .78}`;
-    g.append(el("polygon", { points, fill: "#e5e7eb", stroke: "#cbd5e1", "stroke-width": .03 }));
   } else if (variant === "head-only") {
-    g.append(el("rect", { x: b.x, y: b.y + b.h * .34, width: b.w, height: b.h * .66, fill: mask, stroke: "none" }));
+    g.append(el("rect", { x: frame.x, y: frame.y + frame.h * .34, width: frame.w, height: frame.h * .66, fill: mask, stroke: "none" }));
   }
   if (variant === "no-shoot") {
-    g.append(el("line", { x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y + b.h, class: "symbol-red" }));
-    g.append(el("line", { x1: b.x + b.w, y1: b.y, x2: b.x, y2: b.y + b.h, class: "symbol-red" }));
+    g.append(el("line", { x1: frame.x, y1: frame.y, x2: frame.x + frame.w, y2: frame.y + frame.h, class: "symbol-red" }));
+    g.append(el("line", { x1: frame.x + frame.w, y1: frame.y, x2: frame.x, y2: frame.y + frame.h, class: "symbol-red" }));
   }
 }
 
@@ -749,6 +807,7 @@ function colorFor(type) {
 }
 
 function addObject(type) {
+  if (hiddenObjectTypes.has(type)) return;
   if (!activeRange) return setStatus("Bitte zuerst einen Schiesskeller wählen", true);
   const def = objectTypes[type];
   const obj = {
@@ -762,7 +821,7 @@ function addObject(type) {
     label: "",
     properties: {}
   };
-  if (type === "target") {
+  if (["target", "swinger", "mover"].includes(type)) {
     obj.properties = {
       targetVariant: "full",
       variantDirection: "right",
@@ -827,7 +886,11 @@ function renderObjectForm() {
     $("objectForm").textContent = "Kein Objekt ausgewählt";
     return;
   }
-  const isTarget = obj.type === "target";
+  const hasTargetVariant = ["target", "swinger", "mover"].includes(obj.type);
+  const typeOptions = Object.entries(objectTypes)
+    .filter(([k]) => !hiddenObjectTypes.has(k) || k === obj.type)
+    .map(([k, v]) => `<option value="${k}">${v.label}</option>`)
+    .join("");
   const props = obj.properties || {};
   $("objectForm").className = "object-form";
   $("objectForm").innerHTML = `
@@ -837,7 +900,7 @@ function renderObjectForm() {
       <button id="objDuplicate" type="button">Duplizieren</button>
       <button id="objDelete" type="button">Löschen</button>
     </div>
-    <label>Typ<select id="objType">${Object.entries(objectTypes).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label>
+    <label>Typ<select id="objType">${typeOptions}</select></label>
     <div class="muted">X/Y beziehen sich auf die Objektmitte</div>
     <div class="grid2">
       <label>X Position Mitte m<input id="objX" type="number" step="0.1"></label>
@@ -847,7 +910,7 @@ function renderObjectForm() {
       <label>Rotation °<input id="objRot" type="number" step="5"></label>
       <label>Label<input id="objLabel"></label>
     </div>
-    ${isTarget ? `
+    ${hasTargetVariant ? `
     <label>Scheibenvariante<select id="objTargetVariant">
       ${targetVariants.map(v => `<option value="${v.value}">${v.label}</option>`).join("")}
     </select></label>
@@ -860,16 +923,16 @@ function renderObjectForm() {
   const center = objectCenterM(obj);
   $("objType").value = obj.type; $("objX").value = round2(center.x); $("objY").value = round2(center.y);
   $("objW").value = obj.widthM; $("objH").value = obj.heightM; $("objRot").value = obj.rotation; $("objLabel").value = obj.label || "";
-  if (isTarget) {
+  if (hasTargetVariant) {
     $("objTargetVariant").value = props.targetVariant || "full";
     $("objVariantDirection").value = props.variantDirection || "right";
     $("objTargetVariantCustom").value = props.customTargetVariant || "";
     $("objTargetNote").value = props.targetNote || "";
-    $("objVariantDirectionWrap").hidden = !["half", "partial"].includes($("objTargetVariant").value);
+    $("objVariantDirectionWrap").hidden = $("objTargetVariant").value !== "half";
     $("objTargetVariantCustomWrap").hidden = $("objTargetVariant").value !== "custom";
     $("objTargetVariant").addEventListener("input", () => {
       $("objTargetVariantCustomWrap").hidden = $("objTargetVariant").value !== "custom";
-      $("objVariantDirectionWrap").hidden = !["half", "partial"].includes($("objTargetVariant").value);
+      $("objVariantDirectionWrap").hidden = $("objTargetVariant").value !== "half";
       readObjectForm();
     });
   }
@@ -878,7 +941,7 @@ function renderObjectForm() {
   $("objDuplicate").addEventListener("click", duplicateSelectedObject);
   $("objDelete").addEventListener("click", deleteSelectedObject);
   ["objType", "objX", "objY", "objW", "objH", "objRot", "objLabel"].forEach(id => $(id).addEventListener("input", readObjectForm));
-  if (isTarget) ["objVariantDirection", "objTargetVariantCustom", "objTargetNote"].forEach(id => $(id).addEventListener("input", readObjectForm));
+  if (hasTargetVariant) ["objVariantDirection", "objTargetVariantCustom", "objTargetNote"].forEach(id => $(id).addEventListener("input", readObjectForm));
   updateObjectActionBar();
 }
 
@@ -896,7 +959,7 @@ function readObjectForm() {
   applyCenterBounds(obj);
   obj.rotation = Number($("objRot").value || 0);
   obj.label = $("objLabel").value;
-  if (obj.type === "target") {
+  if (["target", "swinger", "mover"].includes(obj.type)) {
     obj.properties.targetVariant = $("objTargetVariant") ? $("objTargetVariant").value : (obj.properties.targetVariant || "full");
     obj.properties.variantDirection = $("objVariantDirection") ? $("objVariantDirection").value : (obj.properties.variantDirection || "right");
     obj.properties.customTargetVariant = $("objTargetVariantCustom") ? $("objTargetVariantCustom").value : (obj.properties.customTargetVariant || "");

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import math
 import sqlite3
 import uuid
 from functools import wraps
@@ -417,14 +418,25 @@ def default_mag_prep() -> dict:
 def normalize_ammo(ammo: dict | None, objects: list | None = None) -> dict:
     data = default_ammo()
     data.update(ammo or {})
-    target_count = sum(
-        1
-        for obj in objects or []
-        if obj.get("type") == "target" and (obj.get("properties") or {}).get("targetVariant", "full") != "no-shoot"
-    )
+    base_targets = 0
+    bonus_shots = 0
+    for obj in objects or []:
+        obj_type = obj.get("type")
+        variant = (obj.get("properties") or {}).get("targetVariant", "full")
+        if obj_type in {"target", "swinger", "mover"} and variant != "no-shoot":
+            base_targets += 1
+            continue
+        if obj_type == "popper":
+            bonus_shots += 1
+        elif obj_type == "steelPlate":
+            bonus_shots += 1
+        elif obj_type == "plateRack":
+            bonus_shots += 5
+
+    target_count = base_targets
     auto = bool(data.get("autoCalculate", True))
     rounds_per_target = max(1, int(data.get("roundsPerTarget") or 2))
-    rounds = target_count * rounds_per_target if auto else max(0, int(data.get("roundsPerRun") or 0))
+    rounds = math.ceil(target_count * rounds_per_target + bonus_shots) if auto else max(0, int(data.get("roundsPerRun") or 0))
     runs = max(1, int(data.get("runs") or 1))
     data["autoCalculate"] = auto
     data["targetCount"] = target_count
@@ -474,15 +486,15 @@ def normalize_objects(objects: list | None) -> list[dict]:
         if obj_type == "noShoot":
             obj_type = "target"
             properties = {**properties, "targetVariant": "no-shoot"}
-        if obj_type == "target":
+        if obj_type in {"target", "swinger", "mover"}:
             raw_variant = properties.get("targetVariant") or "full"
             variant = raw_variant
-            if raw_variant in {"hard-cover", "no-shoot-overlay"}:
-                variant = "partial"
+            if raw_variant in {"hard-cover", "no-shoot-overlay", "partial"}:
+                variant = "half"
             if str(properties.get("role") or "").lower() in {"no-shoot", "noshoot"}:
                 variant = "no-shoot"
             properties = {
-                "targetVariant": variant if variant in {"full", "no-shoot", "half", "partial", "head-only", "custom"} else "full",
+                "targetVariant": variant if variant in {"full", "no-shoot", "half", "head-only", "custom"} else "full",
                 "variantDirection": (properties.get("variantDirection") or "right") if (properties.get("variantDirection") or "right") in {"left", "right", "top", "bottom"} else "right",
                 "customTargetVariant": str(properties.get("customTargetVariant") or ""),
                 "targetNote": str(properties.get("targetNote") or ""),
@@ -1306,7 +1318,7 @@ OBJECT_LABELS = {
     "mover": "Mover",
     "plateRack": "Plate Rack",
     "activator": "Activator",
-    "start": "Startposition",
+    "start": "Startmarkierung",
     "barrel": "Fass",
     "cone": "Pylone",
     "barricade": "Barrikade",
@@ -1461,8 +1473,8 @@ def add_object_to_drawing(drawing, obj, ox, oy, scale, draw_h, pixels_per_meter)
     cy = pdf_y_from_stage_top(oy, draw_h, geom["centerY"])
     group = Group()
     add_pdf_symbol(group, obj["type"], -w / 2, -h / 2, w, h, obj=obj)
-    if obj.get("type") == "target":
-        add_pdf_target_variant_overlay(group, obj, -w / 2, -h / 2, w, h)
+    if obj.get("type") in {"target", "swinger", "mover"}:
+        add_pdf_target_variant_overlay(group, obj, -w / 2, -h / 2, w, h, obj.get("type"))
     group.translate(cx, cy)
     if obj.get("rotation"):
         group.rotate(-float(obj.get("rotation") or 0))
@@ -1515,26 +1527,30 @@ def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float,
         group.add(Polygon([x + w * .5, y + h, x + w * .72, y + h * .8, x + w * .76, y + h * .4, x + w * .64, y + h * .16, x + w * .36, y + h * .16, x + w * .24, y + h * .4, x + w * .28, y + h * .8], fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
         group.add(Rect(x + w * .42, y, w * .16, h * .12, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
     elif obj_type == "steelPlate":
-        group.add(Circle(x + w / 2, y + h / 2, min(w, h) * .45, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+        group.add(Circle(x + w / 2, y + h / 2, min(w, h) * .48, fillColor=fill, strokeColor=stroke, strokeWidth=0.9))
     elif obj_type == "swinger":
-        group.add(Rect(x + w * .28, y + h * .24, w * .44, h * .54, fillColor=fill, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Rect(x + w * .42, y + h * .78, w * .16, h * .12, fillColor=stroke, strokeColor=stroke, strokeWidth=0.5))
-        group.add(Line(x + w * .22, y + h * .58, x + w * .18, y + h * .5, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Line(x + w * .18, y + h * .5, x + w * .22, y + h * .42, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Polygon([x + w * .2, y + h * .42, x + w * .25, y + h * .43, x + w * .22, y + h * .47], fillColor=stroke, strokeColor=stroke))
-        group.add(Line(x + w * .78, y + h * .42, x + w * .82, y + h * .5, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Line(x + w * .82, y + h * .5, x + w * .78, y + h * .58, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Polygon([x + w * .8, y + h * .58, x + w * .75, y + h * .57, x + w * .78, y + h * .53], fillColor=stroke, strokeColor=stroke))
+        variant = ((obj or {}).get("properties") or {}).get("targetVariant") or "full"
+        symbol_fill = colors.HexColor("#f8fafc") if variant == "no-shoot" else fill
+        group.add(Rect(x + w * .24, y + h * .20, w * .52, h * .66, fillColor=symbol_fill, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Rect(x + w * .42, y + h * .10, w * .16, h * .12, fillColor=stroke, strokeColor=stroke, strokeWidth=0.5))
+        group.add(Line(x + w * .22, y + h * .42, x + w * .18, y + h * .5, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .18, y + h * .5, x + w * .22, y + h * .58, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Polygon([x + w * .2, y + h * .58, x + w * .25, y + h * .57, x + w * .22, y + h * .53], fillColor=stroke, strokeColor=stroke))
+        group.add(Line(x + w * .78, y + h * .58, x + w * .82, y + h * .5, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .82, y + h * .5, x + w * .78, y + h * .42, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Polygon([x + w * .8, y + h * .42, x + w * .75, y + h * .43, x + w * .78, y + h * .47], fillColor=stroke, strokeColor=stroke))
     elif obj_type == "mover":
-        group.add(Rect(x + w * .28, y + h * .2, w * .44, h * .5, fillColor=fill, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Line(x + w * .16, y + h * .82, x + w * .84, y + h * .82, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Line(x + w * .22, y + h * .9, x + w * .78, y + h * .9, strokeColor=stroke, strokeWidth=0.9))
-        group.add(Polygon([x + w * .22, y + h * .9, x + w * .29, y + h * .86, x + w * .29, y + h * .94], fillColor=stroke, strokeColor=stroke))
-        group.add(Polygon([x + w * .78, y + h * .9, x + w * .71, y + h * .86, x + w * .71, y + h * .94], fillColor=stroke, strokeColor=stroke))
+        variant = ((obj or {}).get("properties") or {}).get("targetVariant") or "full"
+        symbol_fill = colors.HexColor("#f8fafc") if variant == "no-shoot" else fill
+        group.add(Rect(x + w * .24, y + h * .20, w * .52, h * .66, fillColor=symbol_fill, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .16, y + h * .18, x + w * .84, y + h * .18, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .22, y + h * .10, x + w * .78, y + h * .10, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Polygon([x + w * .22, y + h * .10, x + w * .29, y + h * .14, x + w * .29, y + h * .06], fillColor=stroke, strokeColor=stroke))
+        group.add(Polygon([x + w * .78, y + h * .10, x + w * .71, y + h * .14, x + w * .71, y + h * .06], fillColor=stroke, strokeColor=stroke))
     elif obj_type == "plateRack":
         for pos in (.14, .32, .5, .68, .86):
-            group.add(Circle(x + w * pos, y + h * .42, min(w, h) * .13, fillColor=fill, strokeColor=stroke, strokeWidth=0.6))
-        group.add(Line(x + w * .06, y + h * .82, x + w * .94, y + h * .82, strokeColor=stroke, strokeWidth=0.6))
+            group.add(Circle(x + w * pos, y + h * .48, min(w, h) * .18, fillColor=fill, strokeColor=stroke, strokeWidth=0.8))
+        group.add(Line(x + w * .06, y + h * .82, x + w * .94, y + h * .82, strokeColor=stroke, strokeWidth=0.8))
     elif obj_type == "activator":
         group.add(Rect(x + w * .2, y + h * .12, w * .6, h * .76, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
         group.add(Polygon([x + w * .5, y + h * .8, x + w * .42, y + h * .5, x + w * .5, y + h * .5, x + w * .56, y + h * .18, x + w * .68, y + h * .5, x + w * .52, y + h * .5], fillColor=stroke, strokeColor=stroke))
@@ -1551,34 +1567,30 @@ def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float,
             group.add(String(x + w * .25, y + h * .35, "T", fontSize=min(w, h) * .5, fillColor=stroke))
 
 
-def add_pdf_target_variant_overlay(group, obj: dict, x: float, y: float, w: float, h: float):
+def add_pdf_target_variant_overlay(group, obj: dict, x: float, y: float, w: float, h: float, obj_type: str = "target"):
     props = obj.get("properties") or {}
     variant = props.get("targetVariant") or "full"
     direction = props.get("variantDirection") or "right"
+    if obj_type == "swinger":
+        frame = {"x": x + w * .24, "y": y + h * .14, "w": w * .52, "h": h * .66}
+    elif obj_type == "mover":
+        frame = {"x": x + w * .24, "y": y + h * .14, "w": w * .52, "h": h * .66}
+    else:
+        frame = {"x": x, "y": y, "w": w, "h": h}
     if variant == "half":
         if direction == "left":
-            group.add(Rect(x + w * .5, y, w * .5, h, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+            group.add(Rect(frame["x"] + frame["w"] * .5, frame["y"], frame["w"] * .5, frame["h"], fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
         elif direction == "right":
-            group.add(Rect(x, y, w * .5, h, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+            group.add(Rect(frame["x"], frame["y"], frame["w"] * .5, frame["h"], fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
         elif direction == "top":
-            group.add(Rect(x, y + h * .5, w, h * .5, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+            group.add(Rect(frame["x"], frame["y"] + frame["h"] * .5, frame["w"], frame["h"] * .5, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
         else:
-            group.add(Rect(x, y, w, h * .5, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
-    elif variant == "partial":
-        if direction == "left":
-            points = [x, y, x + w * .38, y, x + w * .58, y + h, x, y + h]
-        elif direction == "right":
-            points = [x + w * .42, y, x + w, y, x + w, y + h, x + w * .62, y + h]
-        elif direction == "top":
-            points = [x, y + h * .42, x + w, y + h * .18, x + w, y, x, y]
-        else:
-            points = [x, y + h, x + w, y + h, x + w, y + h * .58, x, y + h * .78]
-        group.add(Polygon(points, fillColor=colors.HexColor("#e5e7eb"), strokeColor=colors.HexColor("#cbd5e1"), strokeWidth=0.4))
+            group.add(Rect(frame["x"], frame["y"], frame["w"], frame["h"] * .5, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
     elif variant == "head-only":
-        group.add(Rect(x, y, w, h * .66, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+        group.add(Rect(frame["x"], frame["y"], frame["w"], frame["h"] * .66, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
     if variant == "no-shoot":
-        group.add(Line(x, y, x + w, y + h, strokeColor=colors.HexColor("#dc2626"), strokeWidth=1))
-        group.add(Line(x + w, y, x, y + h, strokeColor=colors.HexColor("#dc2626"), strokeWidth=1))
+        group.add(Line(frame["x"], frame["y"], frame["x"] + frame["w"], frame["y"] + frame["h"], strokeColor=colors.HexColor("#dc2626"), strokeWidth=1))
+        group.add(Line(frame["x"] + frame["w"], frame["y"], frame["x"], frame["y"] + frame["h"], strokeColor=colors.HexColor("#dc2626"), strokeWidth=1))
 
 
 def legend_table(stage: dict, range_data: dict, used_labels: set, styles):
