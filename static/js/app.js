@@ -343,6 +343,7 @@ function renderStage() {
   svg.append(el("rect", { x: 0, y: 0, width, height, class: "range-shell" }));
   for (let x = activeRange.gridM; x < width; x += activeRange.gridM) svg.append(el("line", { x1: x, y1: 0, x2: x, y2: height, class: "grid-line" }));
   for (let y = activeRange.gridM; y < height; y += activeRange.gridM) svg.append(el("line", { x1: 0, y1: y, x2: width, y2: y, class: "grid-line" }));
+  renderMeterMarks(svg, width, height);
   renderBoundarySegments(svg, activeRange, false);
   const ordered = sortedObjects();
   ordered.filter(obj => obj.id !== selectedObjectId).forEach(obj => svg.append(objectNode(obj)));
@@ -355,6 +356,28 @@ function renderStage() {
   svg.onpointermove = onPointerMove;
   svg.onpointerup = endDrag;
   svg.onpointerleave = endDrag;
+}
+
+function shouldLabelMeter(i, maxMeter) {
+  return i === 0 || i === maxMeter || i % 5 === 0;
+}
+
+function renderMeterMarks(svg, width, height) {
+  const maxX = Math.floor(width);
+  const maxY = Math.floor(height);
+  const tick = .16;
+  for (let y = 0; y <= maxY; y++) {
+    svg.append(el("line", { x1: 0, y1: y, x2: -tick, y2: y, class: "meter-tick" }));
+    if (shouldLabelMeter(y, maxY)) {
+      svg.append(el("text", { x: -tick - .06, y: y + .08, "text-anchor": "end", class: "meter-label" }, `${y} m`));
+    }
+  }
+  for (let x = 0; x <= maxX; x++) {
+    svg.append(el("line", { x1: x, y1: height, x2: x, y2: height + tick, class: "meter-tick" }));
+    if (shouldLabelMeter(x, maxX)) {
+      svg.append(el("text", { x, y: height + tick + .24, "text-anchor": "middle", class: "meter-label" }, `${x} m`));
+    }
+  }
 }
 
 function sortedObjects() {
@@ -530,6 +553,7 @@ function addObject(type) {
     label: "",
     properties: {}
   };
+  applyCenterBounds(obj);
   currentStage.objects.push(obj);
   selectedObjectId = obj.id;
   renderAmmoFields();
@@ -553,8 +577,9 @@ function onPointerMove(event) {
   if (!dragState || !activeRange) return;
   const obj = selectedObject();
   const p = svgPoint(event);
-  obj.xM = clamp(round2(p.x - dragState.dx), 0, activeRange.widthM - obj.widthM);
-  obj.yM = clamp(round2(p.y - dragState.dy), 0, activeRange.heightM - obj.heightM);
+  obj.xM = round2(p.x - dragState.dx);
+  obj.yM = round2(p.y - dragState.dy);
+  applyCenterBounds(obj);
   renderStage();
   renderObjectForm();
 }
@@ -589,15 +614,17 @@ function renderObjectForm() {
       <button id="objDelete" type="button">Löschen</button>
     </div>
     <label>Typ<select id="objType">${Object.entries(objectTypes).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}</select></label>
+    <div class="muted">X/Y beziehen sich auf die Objektmitte</div>
     <div class="grid2">
-      <label>X m<input id="objX" type="number" step="0.1"></label>
-      <label>Y m<input id="objY" type="number" step="0.1"></label>
+      <label>X Position Mitte m<input id="objX" type="number" step="0.1"></label>
+      <label>Y Position Mitte m<input id="objY" type="number" step="0.1"></label>
       <label>Breite m<input id="objW" type="number" step="0.1" min="0.1"></label>
       <label>Höhe/Tiefe m<input id="objH" type="number" step="0.1" min="0.1"></label>
       <label>Rotation °<input id="objRot" type="number" step="5"></label>
       <label>Label<input id="objLabel"></label>
     </div>`;
-  $("objType").value = obj.type; $("objX").value = obj.xM; $("objY").value = obj.yM;
+  const center = objectCenterM(obj);
+  $("objType").value = obj.type; $("objX").value = round2(center.x); $("objY").value = round2(center.y);
   $("objW").value = obj.widthM; $("objH").value = obj.heightM; $("objRot").value = obj.rotation; $("objLabel").value = obj.label || "";
   $("objRotateLeft").addEventListener("click", () => rotateSelectedObject(-15));
   $("objRotateRight").addEventListener("click", () => rotateSelectedObject(15));
@@ -610,13 +637,33 @@ function readObjectForm() {
   const obj = selectedObject();
   if (!obj) return;
   obj.type = $("objType").value;
-  obj.xM = clamp(Number($("objX").value || 0), 0, activeRange.widthM);
-  obj.yM = clamp(Number($("objY").value || 0), 0, activeRange.heightM);
   obj.widthM = Math.max(.1, Number($("objW").value || .1));
   obj.heightM = Math.max(.1, Number($("objH").value || .1));
+  const centerX = Number($("objX").value || 0);
+  const centerY = Number($("objY").value || 0);
+  obj.xM = centerX - obj.widthM / 2;
+  obj.yM = centerY - obj.heightM / 2;
+  applyCenterBounds(obj);
   obj.rotation = Number($("objRot").value || 0);
   obj.label = $("objLabel").value;
   renderStage();
+}
+
+function objectCenterM(obj) {
+  return {
+    x: Number(obj.xM || 0) + Number(obj.widthM || 0) / 2,
+    y: Number(obj.yM || 0) + Number(obj.heightM || 0) / 2
+  };
+}
+
+function applyCenterBounds(obj) {
+  if (!activeRange || !obj) return;
+  const minX = -obj.widthM / 2;
+  const maxX = activeRange.widthM - obj.widthM / 2;
+  const minY = -obj.heightM / 2;
+  const maxY = activeRange.heightM - obj.heightM / 2;
+  obj.xM = clamp(obj.xM, minX, maxX);
+  obj.yM = clamp(obj.yM, minY, maxY);
 }
 
 function deleteSelectedObject() {
@@ -642,8 +689,9 @@ function duplicateSelectedObject() {
   if (!obj || !activeRange) return;
   const copy = JSON.parse(JSON.stringify(obj));
   copy.id = crypto.randomUUID();
-  copy.xM = clamp(round2(copy.xM + .5), 0, Math.max(0, activeRange.widthM - copy.widthM));
-  copy.yM = clamp(round2(copy.yM + .5), 0, Math.max(0, activeRange.heightM - copy.heightM));
+  copy.xM = round2(copy.xM + .5);
+  copy.yM = round2(copy.yM + .5);
+  applyCenterBounds(copy);
   currentStage.objects.push(copy);
   selectedObjectId = copy.id;
   renderAmmoFields();

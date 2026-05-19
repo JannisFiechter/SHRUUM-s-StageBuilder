@@ -140,6 +140,8 @@ class StagebuilderApiTest(unittest.TestCase):
         self.assertIn("Start Kurzwaffe", pdf_text)
         self.assertNotIn("Start Langwaffe", pdf_text)
         self.assertNotIn("Schwerpunkte", pdf_text)
+        self.assertNotIn("Notizfeld Author", pdf_text)
+        self.assertIn("25 m", pdf_text)
 
     def test_symbol_contract_and_range_recreate_after_delete_all(self):
         symbols = json.loads((Path(stage_app.BASE_DIR) / "static/symbols.json").read_text(encoding="utf-8"))

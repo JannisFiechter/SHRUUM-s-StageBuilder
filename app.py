@@ -901,7 +901,7 @@ def build_pdf(stage: dict, range_data: dict, settings: dict | None = None) -> By
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ])))
     story.append(Spacer(1, 4 * mm))
-    story.append(box("Ablaufbeschreibung", stage["procedure"] or "-", styles, width=170 * mm, min_height=90 * mm))
+    story.append(box("Ablaufbeschreibung", stage["procedure"] or "-", styles, width=170 * mm, min_height=102 * mm))
     story.append(Spacer(1, 4 * mm))
     mag_boxes = []
     if yes_weapon(stage, "kurzwaffe"):
@@ -910,8 +910,8 @@ def build_pdf(stage: dict, range_data: dict, settings: dict | None = None) -> By
         mag_boxes.append(("Magazinvorbereitung Langwaffe", mag_text(stage["magPrep"]["longGun"])))
     if stage["ammo"].get("manualAmmoNote"):
         mag_boxes.append(("Munitionsnotiz", stage["ammo"]["manualAmmoNote"]))
-    mag_boxes.append(("Notizfeld Author", "\n\n\n\n"))
-    story.append(two_col_boxes(mag_boxes, styles))
+    if mag_boxes:
+        story.append(two_col_boxes(mag_boxes, styles))
     doc.build(
         story,
         canvasmaker=lambda *args, **kwargs: FooterCanvas(
@@ -1091,6 +1091,7 @@ def stage_drawing(stage: dict, range_data: dict, max_w: float, max_h: float):
         y = oy + g * scale
         drawing.add(Line(ox, y, ox + draw_w, y, strokeColor=colors.HexColor("#e5e7eb"), strokeWidth=0.25))
         g += grid
+    add_meter_marks_to_drawing(drawing, ox, oy, draw_w, draw_h, width_m, height_m, scale)
     for b in range_data.get("boundaryBackstops", []):
         if not b.get("active"):
             continue
@@ -1111,6 +1112,31 @@ def stage_drawing(stage: dict, range_data: dict, max_w: float, max_h: float):
         add_pdf_label(drawing, obj, ox, oy, scale, draw_h, ppm)
     drawing.add(String(ox, max(0, oy - 9), f"{width_m:g} m x {height_m:g} m", fontSize=7, fillColor=colors.HexColor("#374151")))
     return drawing, used
+
+
+def should_label_meter(i: int, max_meter: int) -> bool:
+    return i in (0, max_meter) or i % 5 == 0
+
+
+def add_meter_marks_to_drawing(drawing, ox: float, oy: float, draw_w: float, draw_h: float, width_m: float, height_m: float, scale: float):
+    tick = 2.2
+    label_color = colors.HexColor("#64748b")
+    max_x = int(width_m)
+    max_y = int(height_m)
+
+    for i in range(0, max_y + 1):
+        y = oy + draw_h - i * scale
+        drawing.add(Line(ox, y, ox - tick, y, strokeColor=label_color, strokeWidth=0.35))
+        if should_label_meter(i, max_y):
+            drawing.add(String(ox - tick - 12, y - 2, f"{i} m", fontSize=5.8, fillColor=label_color))
+
+    for i in range(0, max_x + 1):
+        x = ox + i * scale
+        drawing.add(Line(x, oy, x, oy - tick, strokeColor=label_color, strokeWidth=0.35))
+        if should_label_meter(i, max_x):
+            text = f"{i} m"
+            text_w = stringWidth(text, "Helvetica", 5.8)
+            drawing.add(String(x - text_w / 2, oy - tick - 6, text, fontSize=5.8, fillColor=label_color))
 
 
 def get_boundary_segment_geometry(range_data: dict, side: str, meter_index: int) -> dict:
