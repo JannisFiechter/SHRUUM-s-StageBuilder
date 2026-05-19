@@ -9,16 +9,39 @@
 <body>
   <header class="topbar">
     <div class="brand">SHRUUM's StageBuilder</div>
-    <div class="actions">
-      <button id="newStageBtn">Neue Stage</button>
-      <button id="saveStageBtn" class="primary">Speichern</button>
-      <button id="loadStageBtn">Laden</button>
-      <button id="duplicateStageBtn">Duplizieren</button>
-      <button id="pdfBtn">PDF Export</button>
-      <button id="jsonExportBtn">JSON Export</button>
-      <button id="jsonImportBtn">JSON Import</button>
-      <button id="settingsBtn">PDF Einstellungen</button>
-      <button id="rangesBtn">Schiesskeller verwalten</button>
+    <div class="topbar-groups">
+      <div class="actions action-group">
+        <button id="newStageBtn" title="Neue Stage"><span class="btn-icn" aria-hidden="true">＋</span><span class="btn-txt">Neue Stage</span></button>
+        <button id="saveStageBtn" class="primary" title="Speichern"><span class="btn-icn" aria-hidden="true">💾</span><span class="btn-txt">Speichern</span></button>
+        <button id="loadStageBtn" title="Laden"><span class="btn-icn" aria-hidden="true">📂</span><span class="btn-txt">Laden</span></button>
+      </div>
+      <div class="actions action-group">
+        <button id="pdfBtn" title="PDF Export"><span class="btn-icn" aria-hidden="true">📄</span><span class="btn-txt">PDF Export</span></button>
+        <details class="toolbar-menu">
+          <summary title="Mehr Aktionen"><span class="btn-icn" aria-hidden="true">⋯</span><span class="btn-txt">Mehr</span><span aria-hidden="true">▾</span></summary>
+          <div class="menu-pop">
+            <button id="duplicateStageBtn" type="button" title="Duplizieren"><span class="btn-icn" aria-hidden="true">⧉</span><span>Duplizieren</span></button>
+            <button id="jsonExportBtn" type="button" title="JSON Export"><span class="btn-icn" aria-hidden="true">⇩</span><span>JSON Export</span></button>
+            <button id="jsonImportBtn" type="button" title="JSON Import"><span class="btn-icn" aria-hidden="true">⇧</span><span>JSON Import</span></button>
+          </div>
+        </details>
+      </div>
+      <div class="actions action-group">
+        <details class="toolbar-menu">
+          <summary title="Verwaltung"><span class="btn-icn" aria-hidden="true">⚙</span><span class="btn-txt">Verwaltung</span><span aria-hidden="true">▾</span></summary>
+          <div class="menu-pop">
+            <button id="rangesBtn" type="button" title="Schiesskeller verwalten"><span class="btn-icn" aria-hidden="true">▦</span><span>Schiesskeller</span></button>
+            <button id="settingsBtn" type="button" title="PDF Einstellungen"><span class="btn-icn" aria-hidden="true">🧾</span><span>PDF Einstellungen</span></button>
+          </div>
+        </details>
+      </div>
+    </div>
+    <div class="topbar-status" aria-live="polite">
+      <span id="saveStateBadge" class="status-badge saved">Gespeichert</span>
+      <span id="topbarVersion" class="status-meta">v1.0</span>
+      <span id="topbarRange" class="status-meta" hidden></span>
+    </div>
+    <div hidden>
       <input id="jsonFile" type="file" accept="application/json" hidden>
     </div>
   </header>

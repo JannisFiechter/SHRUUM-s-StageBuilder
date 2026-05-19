@@ -25,6 +25,7 @@ let appSettings = { authorName: "", customFooterText: "", defaultVersion: "v1.0"
 let currentStage = blankStage();
 let selectedObjectId = null;
 let dragState = null;
+let stageDirty = false;
 
 const renderOrder = {
   wall: 10,
@@ -89,6 +90,28 @@ async function api(url, options = {}) {
 function setStatus(text, isError = false) {
   $("statusText").textContent = text;
   $("statusText").style.color = isError ? "#fca5a5" : "";
+  if (isError) setSaveState("error", "Fehler beim Speichern");
+}
+
+function setSaveState(state, label) {
+  const badge = $("saveStateBadge");
+  if (!badge) return;
+  badge.className = `status-badge ${state}`;
+  badge.textContent = label;
+}
+
+function updateTopbarMeta() {
+  if ($("topbarVersion")) $("topbarVersion").textContent = currentStage && currentStage.version ? currentStage.version : "v1.0";
+  if ($("topbarRange")) {
+    const rangeName = activeRange && activeRange.name ? activeRange.name : "";
+    $("topbarRange").hidden = !rangeName;
+    $("topbarRange").textContent = rangeName;
+  }
+}
+
+function markDirty() {
+  stageDirty = true;
+  setSaveState("dirty", "Ungespeicherte Änderungen");
 }
 
 async function init() {
@@ -103,6 +126,8 @@ async function init() {
   syncStageToForm();
   renderRangeSelect();
   renderStage();
+  updateTopbarMeta();
+  setSaveState("saved", "Gespeichert");
   setStatus(activeRange ? "Bereit" : "Bitte zuerst einen Schiesskeller erstellen");
 }
 
@@ -123,6 +148,8 @@ function bindEvents() {
     currentStage.rangeId = activeRange.id;
     calculateDifficulty();
     renderStage();
+    updateTopbarMeta();
+    markDirty();
   });
   document.querySelectorAll("[data-tab]").forEach(btn => btn.addEventListener("click", () => activateTab(btn.dataset.tab)));
   document.querySelectorAll("[data-add]").forEach(btn => btn.addEventListener("click", () => addObject(btn.dataset.add)));
@@ -209,6 +236,7 @@ function syncStageToForm() {
   renderMags("longGun");
   calculateDifficulty();
   renderObjectForm();
+  updateTopbarMeta();
 }
 
 function readStageFromForm() {
@@ -244,6 +272,7 @@ function readStageFromForm() {
   renderWeaponDependent();
   renderAmmoFields();
   calculateDifficulty();
+  markDirty();
 }
 
 function renderWeaponDependent() {
@@ -560,6 +589,7 @@ function addObject(type) {
   calculateDifficulty();
   renderStage();
   renderObjectForm();
+  markDirty();
 }
 
 function startDrag(event, id) {
@@ -582,6 +612,7 @@ function onPointerMove(event) {
   applyCenterBounds(obj);
   renderStage();
   renderObjectForm();
+  markDirty();
 }
 
 function endDrag() { dragState = null; }
@@ -647,6 +678,7 @@ function readObjectForm() {
   obj.rotation = Number($("objRot").value || 0);
   obj.label = $("objLabel").value;
   renderStage();
+  markDirty();
 }
 
 function objectCenterM(obj) {
@@ -674,6 +706,7 @@ function deleteSelectedObject() {
   calculateDifficulty();
   renderStage();
   renderObjectForm();
+  markDirty();
 }
 
 function rotateSelectedObject(delta) {
@@ -682,6 +715,7 @@ function rotateSelectedObject(delta) {
   obj.rotation = normalizeRotation((Number(obj.rotation) || 0) + delta);
   renderStage();
   renderObjectForm();
+  markDirty();
 }
 
 function duplicateSelectedObject() {
@@ -699,6 +733,7 @@ function duplicateSelectedObject() {
   renderStage();
   renderObjectForm();
   activateTab("object");
+  markDirty();
 }
 
 function handleShortcuts(event) {
@@ -763,6 +798,7 @@ function resizeMags(kind, count) {
   section.magazines = section.magazines.slice(0, count).map((m, i) => ({ ...m, name: `Magazin ${i + 1}` }));
   section.magazineCount = count;
   renderMags(kind);
+  markDirty();
 }
 
 async function newStage() {
@@ -771,6 +807,7 @@ async function newStage() {
   selectedObjectId = null;
   syncStageToForm();
   renderStage();
+  markDirty();
   setStatus("Neue Stage angelegt, noch nicht gespeichert");
 }
 
@@ -795,6 +832,7 @@ async function saveSettings() {
 
 async function saveStage() {
   try {
+    setSaveState("saving", "Wird gespeichert...");
     readStageFromForm();
     const method = currentStage.id ? "PUT" : "POST";
     const url = currentStage.id ? `/api/stages/${currentStage.id}` : "/api/stages";
@@ -802,6 +840,8 @@ async function saveStage() {
     await loadStages();
     syncStageToForm();
     renderStage();
+    stageDirty = false;
+    setSaveState("saved", "Gespeichert");
     setStatus("Stage gespeichert");
   } catch (error) {
     setStatus(error.message, true);
@@ -820,6 +860,8 @@ async function openLoadDialog() {
     syncStageToForm();
     renderStage();
     $("loadDialog").close();
+    stageDirty = false;
+    setSaveState("saved", "Gespeichert");
     setStatus("Stage geladen");
   }));
   $("loadDialog").showModal();
@@ -830,6 +872,8 @@ async function duplicateStage() {
   currentStage = await api(`/api/stages/${currentStage.id}/duplicate`, { method: "POST" });
   await loadStages();
   syncStageToForm();
+  stageDirty = false;
+  setSaveState("saved", "Gespeichert");
   setStatus("Stage dupliziert");
 }
 
@@ -854,6 +898,8 @@ async function importJson(event) {
     renderRangeSelect();
     syncStageToForm();
     renderStage();
+    stageDirty = false;
+    setSaveState("saved", "Gespeichert");
     setStatus("JSON importiert");
   } catch (error) {
     setStatus(error.message, true);
@@ -955,6 +1001,8 @@ async function saveRange() {
     renderRangeSelect();
     renderBoundaryEditor();
     renderStage();
+    updateTopbarMeta();
+    markDirty();
     setStatus("Schiesskeller gespeichert");
   } catch (error) {
     setStatus(error.message, true);
@@ -975,6 +1023,8 @@ async function deleteRange() {
   syncStageToForm();
   renderBoundaryEditor();
   renderStage();
+  updateTopbarMeta();
+  markDirty();
 }
 
 function el(name, attrs = {}, text = null) {
