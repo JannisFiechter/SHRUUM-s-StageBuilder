@@ -40,6 +40,9 @@ h2 { margin: 0 0 10px; font-size: 14px; color: #f8fafc; }
 .toolbar-menu { position: relative; }
 .menu-pop { position: absolute; top: calc(100% + 6px); left: 0; min-width: 210px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 6px; display: grid; gap: 4px; box-shadow: 0 8px 20px rgba(0, 0, 0, .35); }
 .menu-pop button { width: 100%; justify-content: flex-start; background: #1e293b; }
+.menu-pop .danger-soft { border-color: #7f1d1d; color: #fecaca; background: #3f1d1d; }
+.menu-pop .danger-soft:hover { border-color: #ef4444; background: #4a1d1d; }
+.menu-sep { height: 1px; background: #334155; margin: 3px 2px; }
 .topbar-status { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
 .status-badge { font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid #334155; background: #1f2937; color: #cbd5e1; }
 .status-badge.saved { border-color: #14532d; background: #052e16; color: #86efac; }
@@ -58,6 +61,7 @@ h2 { margin: 0 0 10px; font-size: 14px; color: #f8fafc; }
 .editor-head label { width: min(360px, 45vw); margin: 0; }
 .object-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .object-actions button { padding: 6px 8px; }
+.object-actions-title { color: var(--muted); font-size: 12px; margin-right: 2px; }
 .object-actions-panel { margin-bottom: 10px; }
 .object-actions-panel button { flex: 1 1 72px; }
 #statusText { color: var(--muted); font-size: 12px; }

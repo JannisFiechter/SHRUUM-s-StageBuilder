@@ -20,7 +20,9 @@
         <details class="toolbar-menu">
           <summary title="Mehr Aktionen"><span class="btn-icn" aria-hidden="true">⋯</span><span class="btn-txt">Mehr</span><span aria-hidden="true">▾</span></summary>
           <div class="menu-pop">
-            <button id="duplicateStageBtn" type="button" title="Duplizieren"><span class="btn-icn" aria-hidden="true">⧉</span><span>Duplizieren</span></button>
+            <button id="duplicateStageBtn" type="button" title="Stage duplizieren"><span class="btn-icn" aria-hidden="true">⧉</span><span>Stage duplizieren</span></button>
+            <button id="deleteStageBtn" type="button" title="Stage löschen" class="danger-soft"><span class="btn-icn" aria-hidden="true">🗑</span><span>Stage löschen</span></button>
+            <div class="menu-sep" role="separator" aria-hidden="true"></div>
             <button id="jsonExportBtn" type="button" title="JSON Export"><span class="btn-icn" aria-hidden="true">⇩</span><span>JSON Export</span></button>
             <button id="jsonImportBtn" type="button" title="JSON Import"><span class="btn-icn" aria-hidden="true">⇧</span><span>JSON Import</span></button>
           </div>
@@ -68,11 +70,12 @@
         <label>Schiesskeller
           <select id="rangeSelect"></select>
         </label>
-        <div class="object-actions" aria-label="Objekt Schnellaktionen">
+        <div id="objectActionsBar" class="object-actions" aria-label="Objekt Schnellaktionen" hidden>
+          <span class="object-actions-title">Objekt-Aktionen:</span>
           <button id="rotateLeftBtn" type="button" title="Q">-15°</button>
           <button id="rotateRightBtn" type="button" title="E">+15°</button>
-          <button id="duplicateObjectBtn" type="button" title="Ctrl+D">Duplizieren</button>
-          <button id="deleteObjectBtn" type="button" title="Delete">Löschen</button>
+          <button id="duplicateObjectBtn" type="button" title="Ausgewähltes Objekt duplizieren (Ctrl+D)">Objekt duplizieren</button>
+          <button id="deleteObjectBtn" type="button" title="Ausgewähltes Objekt löschen (Delete)">Objekt löschen</button>
         </div>
         <span id="statusText" role="status"></span>
       </div>

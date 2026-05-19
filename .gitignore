@@ -1,48 +1,34 @@
-
-## .gitignore
-
-```gitignore
-# Python
+.env
+.env.*
+!.env.example
+instance/
+data/
+*.db
+*.sqlite
+*.sqlite3
 __pycache__/
+exports/
+.venv/
+.pytest_cache/
+
+# Python
 *.py[cod]
 *$py.class
 *.so
 .Python
-.pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
 # Virtual environments
-.venv/
 venv/
 env/
 ENV/
 
-# Flask
-instance/
-.webassets-cache
-
-# SQLite databases
-*.db
-*.sqlite
-*.sqlite3
-
-# Local exports
-exports/
-generated/
-pdf_exports/
-*.pdf
-
 # Logs
 *.log
 logs/
-
-# Environment variables
-.env
-.env.*
-!.env.example
 
 # IDE / Editor
 .vscode/
@@ -50,12 +36,10 @@ logs/
 *.swp
 *.swo
 .DS_Store
-
-# OS files
 Thumbs.db
 desktop.ini
 
-# Node / frontend tooling, falls später ergänzt
+# Node / frontend tooling
 node_modules/
 npm-debug.log*
 yarn-debug.log*

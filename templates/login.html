@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login · SHRUUM's StageBuilder</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+  <main style="min-height:100vh;display:grid;place-items:center;padding:20px;">
+    <section class="panel" style="max-width:420px;width:100%;text-align:center;">
+      <h2>SHRUUM's StageBuilder</h2>
+      <p class="muted">Bitte mit Google anmelden, um fortzufahren.</p>
+      <a href="{{ url_for('auth_google') }}" style="display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:#1f2937;color:var(--text);text-decoration:none;">
+        <span aria-hidden="true">🔐</span><span>Mit Google anmelden</span>
+      </a>
+    </section>
+  </main>
+</body>
+</html>

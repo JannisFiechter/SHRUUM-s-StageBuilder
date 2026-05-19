@@ -5,11 +5,18 @@ import os
 import hashlib
 import sqlite3
 import uuid
+from functools import wraps
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_file
+try:
+    from authlib.integrations.flask_client import OAuth
+except Exception:  # pragma: no cover - optional dependency fallback
+    OAuth = None
+from dotenv import load_dotenv
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -32,8 +39,6 @@ from reportlab.graphics import renderPDF
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "stagebuilder.sqlite3"
 SYMBOL_PATH = BASE_DIR / "static" / "symbols.json"
 
 SIDES = {"top", "right", "bottom", "left"}
@@ -44,6 +49,42 @@ LEGACY_FOOTER_SETTING = "footerText"
 
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
+load_dotenv()
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_csv(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def resolve_db_path() -> Path:
+    configured = os.getenv("DATABASE_PATH", "instance/stagebuilder.db").strip() or "instance/stagebuilder.db"
+    path = Path(configured)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "local-dev-secret")
+app.config["APP_BASE_URL"] = os.getenv("APP_BASE_URL", "http://127.0.0.1:5000")
+app.config["AUTH_ENABLED"] = env_bool("AUTH_ENABLED", False)
+app.config["GOOGLE_CLIENT_ID"] = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+app.config["GOOGLE_CLIENT_SECRET"] = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+app.config["GOOGLE_REDIRECT_URI"] = os.getenv("GOOGLE_REDIRECT_URI", "").strip() or f"{app.config['APP_BASE_URL'].rstrip('/')}/auth/google/callback"
+app.config["ALLOWED_EMAILS"] = env_csv("ALLOWED_EMAILS")
+app.config["FLASK_ENV"] = os.getenv("FLASK_ENV", "development").strip().lower()
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = app.config["FLASK_ENV"] == "production" or app.config["AUTH_ENABLED"]
+
+DB_PATH = resolve_db_path()
+
+oauth = OAuth(app) if OAuth else None
 
 
 def load_symbol_contract() -> dict:
@@ -54,12 +95,73 @@ def load_symbol_contract() -> dict:
 SYMBOL_CONTRACT = load_symbol_contract()
 
 
+def is_production_mode() -> bool:
+    return app.config["FLASK_ENV"] == "production"
+
+
+def validate_runtime_config() -> None:
+    secret = app.config.get("SECRET_KEY", "")
+    if app.config["AUTH_ENABLED"] and OAuth is None:
+        raise RuntimeError("AUTH_ENABLED=true, aber Authlib ist nicht installiert.")
+    if (is_production_mode() or app.config["AUTH_ENABLED"]) and (not secret or secret == "change-me" or secret == "local-dev-secret"):
+        raise RuntimeError("SECRET_KEY muss in Production/Auth-Modus gesetzt sein und darf kein Default-Wert sein.")
+    if app.config["AUTH_ENABLED"] and (
+        not app.config["GOOGLE_CLIENT_ID"]
+        or not app.config["GOOGLE_CLIENT_SECRET"]
+        or not app.config["GOOGLE_REDIRECT_URI"]
+    ):
+        raise RuntimeError("AUTH_ENABLED=true, aber Google OAuth Konfiguration ist unvollständig.")
+
+
+def oauth_ready() -> bool:
+    return bool(
+        oauth is not None
+        and
+        app.config["GOOGLE_CLIENT_ID"]
+        and app.config["GOOGLE_CLIENT_SECRET"]
+        and app.config["GOOGLE_REDIRECT_URI"]
+    )
+
+
+def configure_oauth() -> None:
+    if not oauth_ready():
+        return
+    assert oauth is not None
+    oauth.register(
+        name="google",
+        client_id=app.config["GOOGLE_CLIENT_ID"],
+        client_secret=app.config["GOOGLE_CLIENT_SECRET"],
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+
+
+def current_user() -> dict:
+    if not app.config["AUTH_ENABLED"]:
+        return {"email": "local@stagebuilder", "name": "local"}
+    return session.get("user") or {}
+
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not app.config["AUTH_ENABLED"]:
+            return fn(*args, **kwargs)
+        if session.get("user"):
+            return fn(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Nicht eingeloggt"}), 401
+        return redirect(url_for("login", next=request.url))
+
+    return wrapper
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def db() -> sqlite3.Connection:
-    DATA_DIR.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -450,12 +552,81 @@ def get_stage_or_404(stage_id: int) -> tuple[dict | None, dict | None, int]:
     return row_to_stage(row, range_data), range_data, 200
 
 
+@app.before_request
+def enforce_auth():
+    if not app.config["AUTH_ENABLED"]:
+        return None
+    public_paths = {"/login", "/logout", "/auth/google", "/auth/google/callback"}
+    if request.path.startswith("/static/") or request.path in public_paths:
+        return None
+    if session.get("user"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Nicht eingeloggt"}), 401
+    return redirect(url_for("login", next=request.url))
+
+
+@app.get("/login")
+def login():
+    if not app.config["AUTH_ENABLED"]:
+        return redirect(url_for("index"))
+    if session.get("user"):
+        return redirect(url_for("index"))
+    if not oauth_ready():
+        abort(503, description="Google OAuth ist nicht konfiguriert.")
+    return render_template("login.html")
+
+
+@app.get("/auth/google")
+def auth_google():
+    if not app.config["AUTH_ENABLED"]:
+        return redirect(url_for("index"))
+    if not oauth_ready():
+        abort(503, description="Google OAuth ist nicht konfiguriert.")
+    redirect_uri = app.config["GOOGLE_REDIRECT_URI"]
+    assert oauth is not None
+    return oauth.google.authorize_redirect(redirect_uri)
+
+
+@app.get("/auth/google/callback")
+def auth_google_callback():
+    if not app.config["AUTH_ENABLED"]:
+        return redirect(url_for("index"))
+    if not oauth_ready():
+        abort(503, description="Google OAuth ist nicht konfiguriert.")
+    assert oauth is not None
+    token = oauth.google.authorize_access_token()
+    userinfo = token.get("userinfo") or oauth.google.userinfo()
+    email = (userinfo.get("email") or "").strip().lower()
+    if not email:
+        session.clear()
+        return redirect(url_for("login"))
+    allowed = app.config["ALLOWED_EMAILS"]
+    if allowed and email not in allowed:
+        session.clear()
+        return Response("Zugriff verweigert: E-Mail nicht freigegeben.", status=403)
+    session["user"] = {
+        "email": email,
+        "name": userinfo.get("name") or email,
+        "picture": userinfo.get("picture"),
+    }
+    return redirect(url_for("index"))
+
+
+@app.get("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login" if app.config["AUTH_ENABLED"] else "index"))
+
+
 @app.route("/")
+@login_required
 def index():
     return render_template("index.html", symbol_contract=SYMBOL_CONTRACT)
 
 
 @app.get("/api/ranges")
+@login_required
 def api_ranges():
     with db() as conn:
         rows = conn.execute("SELECT * FROM ranges ORDER BY updated_at DESC, id DESC").fetchall()
@@ -463,6 +634,7 @@ def api_ranges():
 
 
 @app.post("/api/ranges")
+@login_required
 def api_create_range():
     data = request.get_json(force=True)
     created = now_iso()
@@ -493,6 +665,7 @@ def api_create_range():
 
 
 @app.put("/api/ranges/<int:range_id>")
+@login_required
 def api_update_range(range_id):
     data = request.get_json(force=True)
     existing, status = get_range_or_404(range_id)
@@ -525,6 +698,7 @@ def api_update_range(range_id):
 
 
 @app.delete("/api/ranges/<int:range_id>")
+@login_required
 def api_delete_range(range_id):
     with db() as conn:
         conn.execute("DELETE FROM ranges WHERE id = ?", (range_id,))
@@ -532,6 +706,7 @@ def api_delete_range(range_id):
 
 
 @app.get("/api/stages")
+@login_required
 def api_stages():
     with db() as conn:
         rows = conn.execute("SELECT * FROM stages ORDER BY updated_at DESC, id DESC").fetchall()
@@ -540,6 +715,7 @@ def api_stages():
 
 
 @app.get("/api/stages/<int:stage_id>")
+@login_required
 def api_stage(stage_id):
     stage, range_data, status = get_stage_or_404(stage_id)
     if status != 200:
@@ -548,6 +724,7 @@ def api_stage(stage_id):
 
 
 @app.post("/api/stages")
+@login_required
 def api_create_stage():
     data = normalize_stage_payload(request.get_json(force=True))
     data["version"] = "v1.0"
@@ -567,6 +744,7 @@ def api_create_stage():
 
 
 @app.put("/api/stages/<int:stage_id>")
+@login_required
 def api_update_stage(stage_id):
     data = normalize_stage_payload(request.get_json(force=True))
     with db() as conn:
@@ -594,6 +772,7 @@ def api_update_stage(stage_id):
 
 
 @app.post("/api/stages/<int:stage_id>/duplicate")
+@login_required
 def api_duplicate_stage(stage_id):
     stage, range_data, status = get_stage_or_404(stage_id)
     if status != 200:
@@ -609,6 +788,7 @@ def api_duplicate_stage(stage_id):
 
 
 @app.delete("/api/stages/<int:stage_id>")
+@login_required
 def api_delete_stage(stage_id):
     with db() as conn:
         conn.execute("DELETE FROM stages WHERE id = ?", (stage_id,))
@@ -616,6 +796,7 @@ def api_delete_stage(stage_id):
 
 
 @app.get("/api/stages/<int:stage_id>/export.json")
+@login_required
 def api_export_stage(stage_id):
     stage, range_data, status = get_stage_or_404(stage_id)
     if status != 200:
@@ -629,6 +810,7 @@ def api_export_stage(stage_id):
 
 
 @app.post("/api/import")
+@login_required
 def api_import_json():
     payload = request.get_json(force=True)
     range_payload = payload.get("range")
@@ -673,6 +855,7 @@ def api_import_json():
 
 
 @app.get("/api/stages/<int:stage_id>/pdf")
+@login_required
 def api_pdf(stage_id):
     stage, range_data, status = get_stage_or_404(stage_id)
     if status != 200:
@@ -683,11 +866,13 @@ def api_pdf(stage_id):
 
 
 @app.get("/api/settings")
+@login_required
 def api_get_settings():
     return jsonify(get_settings())
 
 
 @app.put("/api/settings")
+@login_required
 def api_save_settings():
     return jsonify(save_settings(request.get_json(force=True)))
 
@@ -1312,6 +1497,13 @@ def mag_text(section: dict) -> str:
     return "\n".join(lines) or "-"
 
 
+if is_production_mode():
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)  # type: ignore[assignment]
+
+validate_runtime_config()
+configure_oauth()
+init_db()
+
+
 if __name__ == "__main__":
-    init_db()
-    app.run(debug=True)
+    app.run(debug=app.config["FLASK_ENV"] == "development")

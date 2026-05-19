@@ -136,6 +136,7 @@ function bindEvents() {
   $("saveStageBtn").addEventListener("click", saveStage);
   $("loadStageBtn").addEventListener("click", openLoadDialog);
   $("duplicateStageBtn").addEventListener("click", duplicateStage);
+  $("deleteStageBtn").addEventListener("click", deleteStage);
   $("pdfBtn").addEventListener("click", exportPdf);
   $("jsonExportBtn").addEventListener("click", exportJson);
   $("jsonImportBtn").addEventListener("click", () => $("jsonFile").click());
@@ -173,6 +174,12 @@ function bindEvents() {
   ["rangeName", "rangeDescription", "rangeWidth", "rangeHeight", "rangeGrid", "rangePpm", "rangeNotes"].forEach(id => {
     $(id).addEventListener("input", () => { readEditingRange(); renderBoundaryEditor(); });
   });
+}
+
+function updateObjectActionBar() {
+  const bar = $("objectActionsBar");
+  if (!bar) return;
+  bar.hidden = !selectedObject();
 }
 
 function activateTab(tab) {
@@ -359,6 +366,7 @@ function renderStage() {
     svg.removeAttribute("viewBox");
     svg.style.width = "100%";
     svg.style.height = "520px";
+    updateObjectActionBar();
     return;
   }
   const pad = 1.2;
@@ -382,6 +390,7 @@ function renderStage() {
     if (obj.label) svg.append(labelNode(obj));
   });
   if (selected) svg.append(selectionNode(selected));
+  updateObjectActionBar();
   svg.onpointermove = onPointerMove;
   svg.onpointerup = endDrag;
   svg.onpointerleave = endDrag;
@@ -601,6 +610,7 @@ function startDrag(event, id) {
   activateTab("object");
   renderStage();
   renderObjectForm();
+  updateObjectActionBar();
 }
 
 function onPointerMove(event) {
@@ -662,6 +672,7 @@ function renderObjectForm() {
   $("objDuplicate").addEventListener("click", duplicateSelectedObject);
   $("objDelete").addEventListener("click", deleteSelectedObject);
   ["objType", "objX", "objY", "objW", "objH", "objRot", "objLabel"].forEach(id => $(id).addEventListener("input", readObjectForm));
+  updateObjectActionBar();
 }
 
 function readObjectForm() {
@@ -707,6 +718,8 @@ function deleteSelectedObject() {
   renderStage();
   renderObjectForm();
   markDirty();
+  setStatus("Objekt gelöscht");
+  updateObjectActionBar();
 }
 
 function rotateSelectedObject(delta) {
@@ -734,6 +747,8 @@ function duplicateSelectedObject() {
   renderObjectForm();
   activateTab("object");
   markDirty();
+  setStatus("Objekt dupliziert");
+  updateObjectActionBar();
 }
 
 function handleShortcuts(event) {
@@ -807,6 +822,7 @@ async function newStage() {
   selectedObjectId = null;
   syncStageToForm();
   renderStage();
+  updateObjectActionBar();
   markDirty();
   setStatus("Neue Stage angelegt, noch nicht gespeichert");
 }
@@ -859,6 +875,7 @@ async function openLoadDialog() {
     renderRangeSelect();
     syncStageToForm();
     renderStage();
+    updateObjectActionBar();
     $("loadDialog").close();
     stageDirty = false;
     setSaveState("saved", "Gespeichert");
@@ -875,6 +892,32 @@ async function duplicateStage() {
   stageDirty = false;
   setSaveState("saved", "Gespeichert");
   setStatus("Stage dupliziert");
+}
+
+async function deleteStage() {
+  if (!currentStage.id) return setStatus("Stage zuerst speichern", true);
+  if (!confirm("Stage wirklich löschen?")) return;
+  try {
+    await api(`/api/stages/${currentStage.id}`, { method: "DELETE" });
+    await loadStages();
+    if (stages.length) {
+      const payload = await api(`/api/stages/${stages[0].id}`);
+      currentStage = payload.stage;
+      activeRange = payload.range;
+    } else {
+      currentStage = blankStage((activeRange && activeRange.id) || (ranges[0] && ranges[0].id) || null);
+      selectedObjectId = null;
+    }
+    renderRangeSelect();
+    syncStageToForm();
+    renderStage();
+    updateObjectActionBar();
+    stageDirty = false;
+    setSaveState("saved", "Gespeichert");
+    setStatus("Stage gelöscht");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
 }
 
 function exportPdf() {
