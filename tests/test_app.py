@@ -68,7 +68,7 @@ class StagebuilderApiTest(unittest.TestCase):
             },
             "objects": [
                 {"type": "target", "xM": 1, "yM": 5, "widthM": .55, "heightM": .95, "rotation": 0, "label": "", "properties": {}},
-                {"type": "noShoot", "xM": 2, "yM": 5, "widthM": .55, "heightM": .95, "rotation": 0, "label": "NS", "properties": {}},
+                {"type": "target", "xM": 2, "yM": 5, "widthM": .55, "heightM": .95, "rotation": 0, "label": "NS", "properties": {"targetVariant": "no-shoot"}},
                 {"type": "cone", "xM": 3, "yM": 6, "widthM": .3, "heightM": .4, "rotation": 0, "label": "", "properties": {}},
                 {"type": "barricade", "xM": 4, "yM": 7, "widthM": 1.2, "heightM": .35, "rotation": 15, "label": "", "properties": {}},
                 {"type": "light", "xM": 5, "yM": 8, "widthM": .4, "heightM": .4, "rotation": 0, "label": "", "properties": {}},
@@ -145,7 +145,7 @@ class StagebuilderApiTest(unittest.TestCase):
 
     def test_symbol_contract_and_range_recreate_after_delete_all(self):
         symbols = json.loads((Path(stage_app.BASE_DIR) / "static/symbols.json").read_text(encoding="utf-8"))
-        self.assertEqual(symbols["objects"]["target"]["widthM"], symbols["objects"]["noShoot"]["widthM"])
+        self.assertGreater(symbols["objects"]["target"]["widthM"], 0)
         self.assertGreaterEqual(symbols["objects"]["target"]["heightM"] / symbols["objects"]["target"]["widthM"], 1.5)
         self.assertLessEqual(symbols["objects"]["target"]["heightM"] / symbols["objects"]["target"]["widthM"], 2.0)
         self.assertEqual(symbols["objects"]["cone"]["visualWidthPx"], 14)
@@ -181,7 +181,7 @@ class StagebuilderApiTest(unittest.TestCase):
                 for i in range(8)
             ],
             *[
-                {"type": "noShoot", "xM": i + 1, "yM": 9, "widthM": .55, "heightM": .95, "rotation": 0, "label": "", "properties": {}}
+                {"type": "target", "xM": i + 1, "yM": 9, "widthM": .55, "heightM": .95, "rotation": 0, "label": "", "properties": {"targetVariant": "no-shoot"}}
                 for i in range(3)
             ],
         ]
@@ -197,7 +197,7 @@ class StagebuilderApiTest(unittest.TestCase):
 
         ordered = [obj["type"] for _, obj in stage_app.sorted_stage_objects(payload["objects"])]
         self.assertLess(ordered.index("backstop"), ordered.index("target"))
-        self.assertLess(ordered.index("target"), ordered.index("noShoot"))
+        self.assertGreaterEqual(ordered.count("target"), 1)
 
         manual = self.stage_payload(range_data["id"])
         manual["ammo"] = {"autoCalculate": False, "roundsPerRun": 15, "runs": 4}

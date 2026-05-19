@@ -50,19 +50,27 @@
 
   <main class="app-shell">
     <aside class="toolbar" aria-label="Objekte">
+      <div class="toolbar-group-title">Grundobjekte</div>
       <button data-tool="select" class="active" title="Auswählen"><span>⌖</span><small>Auswahl</small></button>
       <button data-add="wall" title="Wand"><span>▰</span><small>Wand</small></button>
       <button data-add="backstop" title="Mobiler Kugelfang"><span>▣</span><small>Fang</small></button>
-      <button data-add="target" title="Scheibe"><span>◎</span><small>Scheibe</small></button>
-      <button data-add="noShoot" title="No-Shoot"><span>⊗</span><small>No-Shoot</small></button>
       <button data-add="start" title="Startposition"><span>⚑</span><small>Start</small></button>
+      <button data-add="note" title="Notiz"><span>✎</span><small>Notiz</small></button>
+      <button data-add="arrow" title="Pfeil"><span>➜</span><small>Pfeil</small></button>
+      <button data-add="marker" title="Positionsmarker"><span>⌖</span><small>P-Marker</small></button>
+      <div class="toolbar-group-title">Targets</div>
+      <button data-add="target" title="Scheibe"><span>◎</span><small>Scheibe</small></button>
+      <button data-add="popper" title="Popper"><span>▯</span><small>Popper</small></button>
+      <button data-add="steelPlate" title="Steel Plate"><span>◍</span><small>Plate</small></button>
+      <button data-add="swinger" title="Swinger"><span>◜</span><small>Swinger</small></button>
+      <button data-add="mover" title="Mover"><span>↔</span><small>Mover</small></button>
+      <button data-add="plateRack" title="Plate Rack"><span>≡</span><small>Rack</small></button>
+      <button data-add="activator" title="Activator"><span>✦</span><small>Activator</small></button>
+      <div class="toolbar-group-title">Props</div>
       <button data-add="barrel" title="Fass"><span>⬤</span><small>Fass</small></button>
       <button data-add="cone" title="Pylone"><span>▲</span><small>Pylone</small></button>
       <button data-add="barricade" title="Barrikade"><span>▥</span><small>Barrikade</small></button>
       <button data-add="light" title="Licht"><span>⚡</span><small>Licht</small></button>
-      <button data-add="note" title="Notiz"><span>✎</span><small>Notiz</small></button>
-      <button data-add="arrow" title="Pfeil"><span>➜</span><small>Pfeil</small></button>
-      <button data-add="marker" title="Positionsmarker"><span>⌖</span><small>P-Marker</small></button>
     </aside>
 
     <section class="workspace">
@@ -111,6 +119,16 @@
             <option value="langwaffe">Langwaffe</option>
             <option value="kurzwaffe_langwaffe">Kurzwaffe + Langwaffe</option>
           </select></label>
+          <label>Standard-Scheibentyp<select id="defaultTargetType">
+            <option>IPSC Target</option>
+            <option>IDPA Target</option>
+            <option>CMA Target</option>
+            <option selected>Target</option>
+            <option>Manscheibe</option>
+            <option>Belgische Zielscheibe</option>
+            <option>Custom</option>
+          </select></label>
+          <label id="defaultTargetTypeCustomWrap" hidden>Custom Scheibentyp<input id="defaultTargetTypeCustom" placeholder="Eigener Scheibentyp"></label>
         </div>
         <label id="handgunStartWrap">Start Kurzwaffe<select id="startPositionHandgun">
           <option>Holster</option><option>Low Ready</option><option>High Ready</option>
@@ -147,6 +165,23 @@
         </div>
         <div class="total-line">Total pro Schütze: <b id="roundsTotal">0</b></div>
         <label>Munitionsnotiz<textarea id="manualAmmoNote" rows="2"></textarea></label>
+      </section>
+      <section class="panel">
+        <h2>Target-Nummerierung</h2>
+        <label class="check-row"><input id="targetNumberingEnabled" type="checkbox"> automatisch nummerieren</label>
+        <div class="grid2">
+          <label>Prefix<input id="targetNumberingPrefix" value="T"></label>
+          <label>Startnummer<input id="targetNumberingStart" type="number" min="1" step="1" value="1"></label>
+        </div>
+        <button id="renumberTargetsBtn" type="button">Nummerierung neu sortieren</button>
+      </section>
+      <section class="panel">
+        <h2>Setup / Material</h2>
+        <div class="object-actions">
+          <label class="check-row"><input id="setupListAuto" type="checkbox"> Setup-Liste automatisch berechnen</label>
+          <button id="recalcSetupListBtn" type="button">Setup-Liste neu berechnen</button>
+        </div>
+        <label>Setup-Liste<textarea id="setupListText" rows="8"></textarea></label>
       </section>
       </div>
 

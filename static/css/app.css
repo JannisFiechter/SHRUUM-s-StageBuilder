@@ -53,6 +53,8 @@ h2 { margin: 0 0 10px; font-size: 14px; color: #f8fafc; }
 
 .app-shell { display: grid; grid-template-columns: 82px minmax(360px, 1fr) 370px; height: calc(100vh - 58px); min-height: 620px; }
 .toolbar { border-right: 1px solid var(--line); background: #111822; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.toolbar-group-title { color: #94a3b8; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; margin: 6px 0 2px; padding-top: 4px; border-top: 1px solid #233041; }
+.toolbar-group-title:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .toolbar button { width: 66px; min-height: 42px; padding: 4px 3px; font-size: 11px; display: grid; justify-items: center; gap: 1px; line-height: 1.05; }
 .toolbar button span { font-size: 18px; line-height: 1; }
 .toolbar button small { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60px; }
@@ -86,7 +88,7 @@ h2 { margin: 0 0 10px; font-size: 14px; color: #f8fafc; }
 .object-form .grid2 { margin-bottom: 2px; }
 .muted { color: var(--muted); }
 
-.range-shell { fill: #f8fafc; stroke: #0f172a; stroke-width: 2; }
+.range-shell { fill: #f8fafc; stroke: #0f172a; stroke-width: 0.06; }
 .grid-line { stroke: #d1d5db; stroke-width: 0.04; }
 .meter-tick { stroke: #64748b; stroke-width: .05; }
 .meter-label { fill: #475569; font-size: .24px; }

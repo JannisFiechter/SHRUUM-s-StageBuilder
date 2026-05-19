@@ -207,6 +207,11 @@ def init_db() -> None:
                 difficulty_manual TEXT NOT NULL DEFAULT '',
                 difficulty_override_enabled INTEGER NOT NULL DEFAULT 0,
                 difficulty_reasons TEXT NOT NULL DEFAULT '[]',
+                default_target_type TEXT NOT NULL DEFAULT 'Target',
+                default_target_type_custom TEXT NOT NULL DEFAULT '',
+                target_numbering TEXT NOT NULL DEFAULT '{}',
+                setup_list_auto INTEGER NOT NULL DEFAULT 1,
+                setup_list_text TEXT NOT NULL DEFAULT '',
                 ammo TEXT NOT NULL DEFAULT '{}',
                 mag_prep TEXT NOT NULL DEFAULT '{}',
                 objects TEXT NOT NULL DEFAULT '[]',
@@ -222,6 +227,16 @@ def init_db() -> None:
             conn.execute("ALTER TABLE stages ADD COLUMN version TEXT NOT NULL DEFAULT 'v1.0'")
         if "content_hash" not in columns:
             conn.execute("ALTER TABLE stages ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''")
+        if "default_target_type" not in columns:
+            conn.execute("ALTER TABLE stages ADD COLUMN default_target_type TEXT NOT NULL DEFAULT 'Target'")
+        if "default_target_type_custom" not in columns:
+            conn.execute("ALTER TABLE stages ADD COLUMN default_target_type_custom TEXT NOT NULL DEFAULT ''")
+        if "target_numbering" not in columns:
+            conn.execute("ALTER TABLE stages ADD COLUMN target_numbering TEXT NOT NULL DEFAULT '{}'")
+        if "setup_list_auto" not in columns:
+            conn.execute("ALTER TABLE stages ADD COLUMN setup_list_auto INTEGER NOT NULL DEFAULT 1")
+        if "setup_list_text" not in columns:
+            conn.execute("ALTER TABLE stages ADD COLUMN setup_list_text TEXT NOT NULL DEFAULT ''")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS app_settings (
@@ -293,6 +308,10 @@ def default_settings() -> dict:
     return {"authorName": "", "customFooterText": "", "defaultVersion": "v1.0"}
 
 
+def default_target_numbering() -> dict:
+    return {"enabled": False, "prefix": "T", "start": 1, "mode": "creation-order"}
+
+
 def normalize_version(value: str | None) -> str:
     text = str(value or "v1.0").strip().lower()
     if text.startswith("v"):
@@ -325,6 +344,11 @@ def stage_snapshot(stage: dict) -> dict:
         "focusAreas": sorted(stage.get("focusAreas") or []),
         "difficultyManual": stage.get("difficultyManual") or "",
         "difficultyOverrideEnabled": bool(stage.get("difficultyOverrideEnabled")),
+        "targetType": stage.get("targetType") or stage.get("defaultTargetType") or "Target",
+        "targetTypeCustom": stage.get("targetTypeCustom") or stage.get("defaultTargetTypeCustom") or "",
+        "targetNumbering": stage.get("targetNumbering") or default_target_numbering(),
+        "setupListAuto": bool(stage.get("setupListAuto", True)),
+        "setupListText": stage.get("setupListText") or "",
         "ammo": stage.get("ammo") or {},
         "magPrep": stage.get("magPrep") or {},
         "objects": sorted(stage.get("objects") or [], key=lambda obj: obj.get("id", "")),
@@ -393,7 +417,11 @@ def default_mag_prep() -> dict:
 def normalize_ammo(ammo: dict | None, objects: list | None = None) -> dict:
     data = default_ammo()
     data.update(ammo or {})
-    target_count = sum(1 for obj in objects or [] if obj.get("type") == "target")
+    target_count = sum(
+        1
+        for obj in objects or []
+        if obj.get("type") == "target" and (obj.get("properties") or {}).get("targetVariant", "full") != "no-shoot"
+    )
     auto = bool(data.get("autoCalculate", True))
     rounds_per_target = max(1, int(data.get("roundsPerTarget") or 2))
     rounds = target_count * rounds_per_target if auto else max(0, int(data.get("roundsPerRun") or 0))
@@ -441,17 +469,35 @@ def normalize_mag_prep(mag_prep: dict | None) -> dict:
 def normalize_objects(objects: list | None) -> list[dict]:
     clean = []
     for obj in objects or []:
+        properties = obj.get("properties") if isinstance(obj.get("properties"), dict) else {}
+        obj_type = obj.get("type") or "target"
+        if obj_type == "noShoot":
+            obj_type = "target"
+            properties = {**properties, "targetVariant": "no-shoot"}
+        if obj_type == "target":
+            raw_variant = properties.get("targetVariant") or "full"
+            variant = raw_variant
+            if raw_variant in {"hard-cover", "no-shoot-overlay"}:
+                variant = "partial"
+            if str(properties.get("role") or "").lower() in {"no-shoot", "noshoot"}:
+                variant = "no-shoot"
+            properties = {
+                "targetVariant": variant if variant in {"full", "no-shoot", "half", "partial", "head-only", "custom"} else "full",
+                "variantDirection": (properties.get("variantDirection") or "right") if (properties.get("variantDirection") or "right") in {"left", "right", "top", "bottom"} else "right",
+                "customTargetVariant": str(properties.get("customTargetVariant") or ""),
+                "targetNote": str(properties.get("targetNote") or ""),
+            }
         clean.append(
             {
                 "id": obj.get("id") or uuid.uuid4().hex,
-                "type": obj.get("type") or "target",
+                "type": obj_type,
                 "xM": float(obj.get("xM") or 0),
                 "yM": float(obj.get("yM") or 0),
                 "widthM": max(0.1, float(obj.get("widthM") or 1)),
                 "heightM": max(0.1, float(obj.get("heightM") or 1)),
                 "rotation": float(obj.get("rotation") or 0),
                 "label": str(obj.get("label") or ""),
-                "properties": obj.get("properties") if isinstance(obj.get("properties"), dict) else {},
+                "properties": properties,
             }
         )
     return clean
@@ -463,7 +509,11 @@ def calculate_difficulty(stage: dict, range_data: dict | None = None) -> tuple[s
     focus = set(stage.get("focusAreas") or [])
     objects = stage.get("objects") or []
     target_count = sum(1 for obj in objects if obj.get("type") == "target")
-    no_shoot_count = sum(1 for obj in objects if obj.get("type") == "noShoot")
+    no_shoot_count = sum(
+        1
+        for obj in objects
+        if obj.get("type") == "target" and (obj.get("properties") or {}).get("targetVariant", "full") == "no-shoot"
+    )
     backstop_count = sum(1 for obj in objects if obj.get("type") == "backstop")
     light_count = sum(1 for obj in objects if obj.get("type") == "light")
     if "Team" in focus:
@@ -505,6 +555,8 @@ def row_to_range(row: sqlite3.Row) -> dict:
 def row_to_stage(row: sqlite3.Row, range_data: dict | None = None) -> dict:
     objects = normalize_objects(json_loads(row["objects"], []))
     ammo = normalize_ammo(json_loads(row["ammo"], {}), objects)
+    target_numbering = default_target_numbering()
+    target_numbering.update(json_loads(row["target_numbering"], {}) or {})
     stage = {
         "id": row["id"],
         "rangeId": row["range_id"],
@@ -523,6 +575,11 @@ def row_to_stage(row: sqlite3.Row, range_data: dict | None = None) -> dict:
         "difficultyManual": row["difficulty_manual"],
         "difficultyOverrideEnabled": bool(row["difficulty_override_enabled"]),
         "difficultyReasons": json_loads(row["difficulty_reasons"], []),
+        "targetType": row["default_target_type"] or "Target",
+        "targetTypeCustom": row["default_target_type_custom"] or "",
+        "targetNumbering": target_numbering,
+        "setupListAuto": bool(row["setup_list_auto"]),
+        "setupListText": row["setup_list_text"] or "",
         "contentHash": row["content_hash"],
         "ammo": ammo,
         "magPrep": normalize_mag_prep(json_loads(row["mag_prep"], {})),
@@ -879,6 +936,7 @@ def api_save_settings():
 
 def normalize_stage_payload(raw: dict) -> dict:
     objects = normalize_objects(raw.get("objects"))
+    numbering = raw.get("targetNumbering") if isinstance(raw.get("targetNumbering"), dict) else {}
     stage = {
         "rangeId": int(raw.get("rangeId") or 0),
         "name": raw.get("name") or "Neue Stage",
@@ -894,6 +952,16 @@ def normalize_stage_payload(raw: dict) -> dict:
         "focusAreas": raw.get("focusAreas") if isinstance(raw.get("focusAreas"), list) else [],
         "difficultyManual": raw.get("difficultyManual") if raw.get("difficultyManual") in DIFFICULTIES else "",
         "difficultyOverrideEnabled": bool(raw.get("difficultyOverrideEnabled")),
+        "targetType": raw.get("targetType") or raw.get("defaultTargetType") or "Target",
+        "targetTypeCustom": str(raw.get("targetTypeCustom") or raw.get("defaultTargetTypeCustom") or ""),
+        "targetNumbering": {
+            "enabled": bool(numbering.get("enabled")),
+            "prefix": str(numbering.get("prefix") or "T"),
+            "start": max(1, int(numbering.get("start") or 1)),
+            "mode": "creation-order",
+        },
+        "setupListAuto": bool(raw.get("setupListAuto", True)),
+        "setupListText": str(raw.get("setupListText") or ""),
         "ammo": normalize_ammo(raw.get("ammo"), objects),
         "magPrep": normalize_mag_prep(raw.get("magPrep")),
         "objects": objects,
@@ -907,8 +975,9 @@ def stage_insert_sql() -> str:
     INSERT INTO stages (
         range_id, name, version, description, training_goal, procedure, safety_notes, training_type, weapon_type,
         start_position_handgun, start_position_longgun, focus_areas, difficulty_calculated, difficulty_manual,
-        difficulty_override_enabled, difficulty_reasons, ammo, mag_prep, objects, content_hash, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        difficulty_override_enabled, difficulty_reasons, default_target_type, default_target_type_custom, target_numbering,
+        setup_list_auto, setup_list_text, ammo, mag_prep, objects, content_hash, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
 
@@ -916,8 +985,8 @@ def stage_update_sql() -> str:
     return """
     UPDATE stages SET range_id=?, name=?, version=?, description=?, training_goal=?, procedure=?, safety_notes=?,
     training_type=?, weapon_type=?, start_position_handgun=?, start_position_longgun=?, focus_areas=?,
-    difficulty_calculated=?, difficulty_manual=?, difficulty_override_enabled=?, difficulty_reasons=?,
-    ammo=?, mag_prep=?, objects=?, content_hash=?, updated_at=? WHERE id=?
+    difficulty_calculated=?, difficulty_manual=?, difficulty_override_enabled=?, difficulty_reasons=?, default_target_type=?,
+    default_target_type_custom=?, target_numbering=?, setup_list_auto=?, setup_list_text=?, ammo=?, mag_prep=?, objects=?, content_hash=?, updated_at=? WHERE id=?
     """
 
 
@@ -939,6 +1008,11 @@ def stage_values(data: dict, created_at: str, updated_at: str) -> tuple:
         data["difficultyManual"],
         1 if data["difficultyOverrideEnabled"] else 0,
         json.dumps(data["difficultyReasons"], ensure_ascii=False),
+        data["targetType"],
+        data["targetTypeCustom"],
+        json.dumps(data["targetNumbering"], ensure_ascii=False),
+        1 if data["setupListAuto"] else 0,
+        data["setupListText"],
         json.dumps(data["ammo"], ensure_ascii=False),
         json.dumps(data["magPrep"], ensure_ascii=False),
         json.dumps(data["objects"], ensure_ascii=False),
@@ -1067,11 +1141,13 @@ def build_pdf(stage: dict, range_data: dict, settings: dict | None = None) -> By
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ])))
     story.append(Spacer(1, 4 * mm))
-    content_blocks = [
-        ("Trainingsziel", stage["trainingGoal"]),
+    content_blocks = [("Trainingsziel", stage["trainingGoal"])]
+    if stage.get("setupListText"):
+        content_blocks.append(("Setup / Material", stage["setupListText"]))
+    content_blocks.extend([
         ("Kurzbeschreibung", stage["description"]),
         ("Sicherheitsnotizen", stage["safetyNotes"]),
-    ]
+    ])
     content_blocks = [(title, text) for title, text in content_blocks if text]
     if content_blocks:
         story.append(two_col_boxes(content_blocks, styles))
@@ -1223,7 +1299,13 @@ OBJECT_LABELS = {
     "wall": "Wand",
     "backstop": "mobiler Kugelfang",
     "target": "Scheibe",
-    "noShoot": "No-Shoot",
+    "target_no_shoot": "Scheibe (No-Shoot)",
+    "popper": "Popper",
+    "steelPlate": "Steel Plate",
+    "swinger": "Swinger",
+    "mover": "Mover",
+    "plateRack": "Plate Rack",
+    "activator": "Activator",
     "start": "Startposition",
     "barrel": "Fass",
     "cone": "Pylone",
@@ -1245,6 +1327,12 @@ RENDER_ORDER = {
     "note": 40,
     "arrow": 40,
     "marker": 40,
+    "popper": 68,
+    "steelPlate": 68,
+    "swinger": 68,
+    "mover": 68,
+    "plateRack": 68,
+    "activator": 68,
     "start": 45,
     "target": 70,
     "noShoot": 80,
@@ -1295,7 +1383,6 @@ def stage_drawing(stage: dict, range_data: dict, max_w: float, max_h: float):
         add_object_to_drawing(drawing, obj, ox, oy, scale, draw_h, ppm)
     for obj in ordered_objects:
         add_pdf_label(drawing, obj, ox, oy, scale, draw_h, ppm)
-    drawing.add(String(ox, max(0, oy - 9), f"{width_m:g} m x {height_m:g} m", fontSize=7, fillColor=colors.HexColor("#374151")))
     return drawing, used
 
 
@@ -1373,7 +1460,9 @@ def add_object_to_drawing(drawing, obj, ox, oy, scale, draw_h, pixels_per_meter)
     cx = geom["centerX"]
     cy = pdf_y_from_stage_top(oy, draw_h, geom["centerY"])
     group = Group()
-    add_pdf_symbol(group, obj["type"], -w / 2, -h / 2, w, h)
+    add_pdf_symbol(group, obj["type"], -w / 2, -h / 2, w, h, obj=obj)
+    if obj.get("type") == "target":
+        add_pdf_target_variant_overlay(group, obj, -w / 2, -h / 2, w, h)
     group.translate(cx, cy)
     if obj.get("rotation"):
         group.rotate(-float(obj.get("rotation") or 0))
@@ -1389,19 +1478,20 @@ def add_pdf_label(drawing, obj, ox, oy, scale, draw_h, pixels_per_meter):
         drawing.add(String(x + 2, y + 2, label, fontSize=6, fillColor=colors.HexColor("#111827")))
 
 
-def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float):
+def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float, obj: dict | None = None):
     theme = SYMBOL_THEME.get(obj_type, {"fill": "#93c5fd", "stroke": "#111827"})
     fill = colors.HexColor(theme["fill"])
     stroke = colors.HexColor(theme["stroke"])
     if obj_type == "target":
-        group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
-        r = min(w, h)
-        group.add(Circle(x + w / 2, y + h / 2, r * 0.30, fillColor=None, strokeColor=stroke, strokeWidth=0.6))
-        group.add(Circle(x + w / 2, y + h / 2, r * 0.13, fillColor=None, strokeColor=stroke, strokeWidth=0.6))
-    elif obj_type == "noShoot":
-        group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.8))
-        group.add(Line(x, y, x + w, y + h, strokeColor=stroke, strokeWidth=1))
-        group.add(Line(x + w, y, x, y + h, strokeColor=stroke, strokeWidth=1))
+        variant = ((obj or {}).get("properties") or {}).get("targetVariant") or "full"
+        is_no_shoot = variant == "no-shoot"
+        target_stroke = colors.HexColor("#dc2626") if is_no_shoot else stroke
+        target_fill = colors.HexColor("#f8fafc") if is_no_shoot else fill
+        group.add(Rect(x, y, w, h, fillColor=target_fill, strokeColor=target_stroke, strokeWidth=0.9 if is_no_shoot else 0.7))
+        if not is_no_shoot:
+            r = min(w, h)
+            group.add(Circle(x + w / 2, y + h / 2, r * 0.30, fillColor=None, strokeColor=stroke, strokeWidth=0.6))
+            group.add(Circle(x + w / 2, y + h / 2, r * 0.13, fillColor=None, strokeColor=stroke, strokeWidth=0.6))
     elif obj_type == "start":
         group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.8))
         group.add(Line(x + w * .35, y + h * .2, x + w * .35, y + h * .82, strokeColor=stroke, strokeWidth=0.8))
@@ -1421,6 +1511,33 @@ def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float)
         group.add(Polygon([x + w * .5, y + h * .9, x + w * .36, y + h * .5, x + w * .5, y + h * .5, x + w * .42, y + h * .1, x + w * .68, y + h * .58, x + w * .52, y + h * .58], fillColor=stroke, strokeColor=stroke))
     elif obj_type == "arrow":
         group.add(Polygon([x, y + h * .34, x + w * .58, y + h * .34, x + w * .58, y + h * .14, x + w, y + h * .5, x + w * .58, y + h * .86, x + w * .58, y + h * .66, x, y + h * .66], fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+    elif obj_type == "popper":
+        group.add(Polygon([x + w * .5, y + h, x + w * .72, y + h * .8, x + w * .76, y + h * .4, x + w * .64, y + h * .16, x + w * .36, y + h * .16, x + w * .24, y + h * .4, x + w * .28, y + h * .8], fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+        group.add(Rect(x + w * .42, y, w * .16, h * .12, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+    elif obj_type == "steelPlate":
+        group.add(Circle(x + w / 2, y + h / 2, min(w, h) * .45, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+    elif obj_type == "swinger":
+        group.add(Rect(x + w * .28, y + h * .24, w * .44, h * .54, fillColor=fill, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Rect(x + w * .42, y + h * .78, w * .16, h * .12, fillColor=stroke, strokeColor=stroke, strokeWidth=0.5))
+        group.add(Line(x + w * .22, y + h * .58, x + w * .18, y + h * .5, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .18, y + h * .5, x + w * .22, y + h * .42, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Polygon([x + w * .2, y + h * .42, x + w * .25, y + h * .43, x + w * .22, y + h * .47], fillColor=stroke, strokeColor=stroke))
+        group.add(Line(x + w * .78, y + h * .42, x + w * .82, y + h * .5, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .82, y + h * .5, x + w * .78, y + h * .58, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Polygon([x + w * .8, y + h * .58, x + w * .75, y + h * .57, x + w * .78, y + h * .53], fillColor=stroke, strokeColor=stroke))
+    elif obj_type == "mover":
+        group.add(Rect(x + w * .28, y + h * .2, w * .44, h * .5, fillColor=fill, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .16, y + h * .82, x + w * .84, y + h * .82, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Line(x + w * .22, y + h * .9, x + w * .78, y + h * .9, strokeColor=stroke, strokeWidth=0.9))
+        group.add(Polygon([x + w * .22, y + h * .9, x + w * .29, y + h * .86, x + w * .29, y + h * .94], fillColor=stroke, strokeColor=stroke))
+        group.add(Polygon([x + w * .78, y + h * .9, x + w * .71, y + h * .86, x + w * .71, y + h * .94], fillColor=stroke, strokeColor=stroke))
+    elif obj_type == "plateRack":
+        for pos in (.14, .32, .5, .68, .86):
+            group.add(Circle(x + w * pos, y + h * .42, min(w, h) * .13, fillColor=fill, strokeColor=stroke, strokeWidth=0.6))
+        group.add(Line(x + w * .06, y + h * .82, x + w * .94, y + h * .82, strokeColor=stroke, strokeWidth=0.6))
+    elif obj_type == "activator":
+        group.add(Rect(x + w * .2, y + h * .12, w * .6, h * .76, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+        group.add(Polygon([x + w * .5, y + h * .8, x + w * .42, y + h * .5, x + w * .5, y + h * .5, x + w * .56, y + h * .18, x + w * .68, y + h * .5, x + w * .52, y + h * .5], fillColor=stroke, strokeColor=stroke))
     else:
         group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
         if obj_type == "wall":
@@ -1434,12 +1551,48 @@ def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float)
             group.add(String(x + w * .25, y + h * .35, "T", fontSize=min(w, h) * .5, fillColor=stroke))
 
 
+def add_pdf_target_variant_overlay(group, obj: dict, x: float, y: float, w: float, h: float):
+    props = obj.get("properties") or {}
+    variant = props.get("targetVariant") or "full"
+    direction = props.get("variantDirection") or "right"
+    if variant == "half":
+        if direction == "left":
+            group.add(Rect(x + w * .5, y, w * .5, h, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+        elif direction == "right":
+            group.add(Rect(x, y, w * .5, h, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+        elif direction == "top":
+            group.add(Rect(x, y + h * .5, w, h * .5, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+        else:
+            group.add(Rect(x, y, w, h * .5, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+    elif variant == "partial":
+        if direction == "left":
+            points = [x, y, x + w * .38, y, x + w * .58, y + h, x, y + h]
+        elif direction == "right":
+            points = [x + w * .42, y, x + w, y, x + w, y + h, x + w * .62, y + h]
+        elif direction == "top":
+            points = [x, y + h * .42, x + w, y + h * .18, x + w, y, x, y]
+        else:
+            points = [x, y + h, x + w, y + h, x + w, y + h * .58, x, y + h * .78]
+        group.add(Polygon(points, fillColor=colors.HexColor("#e5e7eb"), strokeColor=colors.HexColor("#cbd5e1"), strokeWidth=0.4))
+    elif variant == "head-only":
+        group.add(Rect(x, y, w, h * .66, fillColor=colors.HexColor("#f8fafc"), strokeColor=None))
+    if variant == "no-shoot":
+        group.add(Line(x, y, x + w, y + h, strokeColor=colors.HexColor("#dc2626"), strokeWidth=1))
+        group.add(Line(x + w, y, x, y + h, strokeColor=colors.HexColor("#dc2626"), strokeWidth=1))
+
+
 def legend_table(stage: dict, range_data: dict, used_labels: set, styles):
     rows = []
     if any(b.get("active") for b in range_data.get("boundaryBackstops", [])):
         rows.append([legend_symbol("boundary"), Paragraph("Kugelfang / Schusszone", styles["Tiny"])])
     for obj_type in sorted(used_labels, key=lambda key: list(OBJECT_LABELS).index(key) if key in OBJECT_LABELS else 99):
         rows.append([legend_symbol(obj_type), Paragraph(OBJECT_LABELS.get(obj_type, obj_type), styles["Tiny"])])
+    has_target_noshoot = any(
+        obj.get("type") == "target" and ((obj.get("properties") or {}).get("targetVariant") or "full") == "no-shoot"
+        for obj in (stage.get("objects") or [])
+    )
+    if has_target_noshoot:
+        rows.append([legend_symbol("target_no_shoot"), Paragraph(OBJECT_LABELS["target_no_shoot"], styles["Tiny"])])
     if not rows:
         rows.append([legend_symbol("empty"), Paragraph("Keine Objekte platziert", styles["Tiny"])])
     table = Table(rows, colWidths=[9 * mm, 27 * mm])
@@ -1471,7 +1624,9 @@ def legend_symbol(obj_type: str):
         d.add(Rect(2 * mm, 2 * mm, 4 * mm, 3 * mm, fillColor=colors.HexColor("#e5e7eb"), strokeColor=colors.HexColor("#94a3b8"), strokeWidth=0.5))
     else:
         g = Group()
-        add_pdf_symbol(g, obj_type, 1 * mm, 1.3 * mm, 6 * mm, 4.6 * mm)
+        obj = {"type": obj_type, "properties": {"targetVariant": "no-shoot"}} if obj_type == "target_no_shoot" else None
+        base_type = "target" if obj_type == "target_no_shoot" else obj_type
+        add_pdf_symbol(g, base_type, 1 * mm, 1.3 * mm, 6 * mm, 4.6 * mm, obj=obj)
         d.add(g)
     return d
 

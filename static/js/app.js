@@ -3,6 +3,21 @@ const focusAreas = [
   "Bewegung", "Deckung / Barrikade", "Entscheidung / No-Shoot", "Licht / Reaktion",
   "Einhand", "Langwaffe", "Waffenwechsel", "Team", "Standard / Test"
 ];
+const targetTypes = ["IPSC Target", "IDPA Target", "CMA Target", "Target", "Manscheibe", "Belgische Zielscheibe", "Custom"];
+const targetVariants = [
+  { value: "full", label: "Voll" },
+  { value: "no-shoot", label: "No-Shoot" },
+  { value: "half", label: "Halbe Scheibe" },
+  { value: "partial", label: "Teilverdeckt" },
+  { value: "head-only", label: "Nur Kopf" },
+  { value: "custom", label: "Custom" }
+];
+const variantDirections = [
+  { value: "left", label: "Links" },
+  { value: "right", label: "Rechts" },
+  { value: "top", label: "Oben" },
+  { value: "bottom", label: "Unten" }
+];
 
 const symbolContract = window.SYMBOL_CONTRACT;
 const objectTypes = Object.fromEntries(Object.entries(symbolContract.objects).map(([key, spec]) => [
@@ -37,6 +52,12 @@ const renderOrder = {
   note: 40,
   arrow: 40,
   marker: 40,
+  popper: 68,
+  steelPlate: 68,
+  swinger: 68,
+  mover: 68,
+  plateRack: 68,
+  activator: 68,
   start: 45,
   target: 70,
   noShoot: 80
@@ -61,6 +82,11 @@ function blankStage(rangeId = null) {
     difficultyManual: "",
     difficultyOverrideEnabled: false,
     difficultyReasons: [],
+    targetType: "Target",
+    targetTypeCustom: "",
+    targetNumbering: { enabled: false, prefix: "T", start: 1, mode: "creation-order" },
+    setupListAuto: true,
+    setupListText: "",
     ammo: { autoCalculate: true, targetCount: 0, roundsPerTarget: 2, roundsPerRun: 0, runs: 1, roundsPerShooterTotal: 0, manualAmmoNote: "" },
     magPrep: {
       handgun: { magazineCount: 3, magazines: defaultMags(3) },
@@ -160,12 +186,17 @@ function bindEvents() {
   $("deleteObjectBtn").addEventListener("click", deleteSelectedObject);
   document.addEventListener("keydown", handleShortcuts);
   ["stageName", "stageVersion", "description", "trainingGoal", "procedure", "safetyNotes", "trainingType", "weaponType",
-    "startPositionHandgun", "startPositionLongGun", "difficultyManual", "manualAmmoNote"].forEach(id => {
+    "startPositionHandgun", "startPositionLongGun", "difficultyManual", "manualAmmoNote", "defaultTargetType", "defaultTargetTypeCustom",
+    "targetNumberingPrefix", "targetNumberingStart", "setupListText"].forEach(id => {
     $(id).addEventListener("input", readStageFromForm);
   });
   ["ammoAutoCalculate", "roundsPerTarget", "roundsPerRun", "runs"].forEach(id => $(id).addEventListener("input", () => { readStageFromForm(); renderAmmoFields(); }));
   $("ammoAutoCalculate").addEventListener("change", () => { readStageFromForm(); renderAmmoFields(); });
   $("difficultyOverrideEnabled").addEventListener("change", readStageFromForm);
+  $("targetNumberingEnabled").addEventListener("change", () => { readStageFromForm(); applyTargetNumbering(false); renderStage(); });
+  $("setupListAuto").addEventListener("change", () => { readStageFromForm(); if ($("setupListAuto").checked) recalculateSetupList(true); renderWeaponDependent(); });
+  $("recalcSetupListBtn").addEventListener("click", () => recalculateSetupList(true));
+  $("renumberTargetsBtn").addEventListener("click", () => { applyTargetNumbering(true); renderStage(); setStatus("Target-Nummerierung aktualisiert"); });
   $("handgunMagCount").addEventListener("input", () => resizeMags("handgun", Number($("handgunMagCount").value || 0)));
   $("longGunMagCount").addEventListener("input", () => resizeMags("longGun", Number($("longGunMagCount").value || 0)));
   $("newRangeBtn").addEventListener("click", newEditingRange);
@@ -227,6 +258,13 @@ function syncStageToForm() {
   $("startPositionLongGun").value = currentStage.startPositionLongGun || "Low Ready";
   $("difficultyOverrideEnabled").checked = !!currentStage.difficultyOverrideEnabled;
   $("difficultyManual").value = currentStage.difficultyManual || "";
+  $("defaultTargetType").value = currentStage.targetType || currentStage.defaultTargetType || "Target";
+  $("defaultTargetTypeCustom").value = currentStage.targetTypeCustom || currentStage.defaultTargetTypeCustom || "";
+  $("targetNumberingEnabled").checked = !!(currentStage.targetNumbering && currentStage.targetNumbering.enabled);
+  $("targetNumberingPrefix").value = (currentStage.targetNumbering && currentStage.targetNumbering.prefix) || "T";
+  $("targetNumberingStart").value = (currentStage.targetNumbering && currentStage.targetNumbering.start) || 1;
+  $("setupListAuto").checked = currentStage.setupListAuto !== false;
+  $("setupListText").value = currentStage.setupListText || "";
   normalizeAmmoState();
   $("ammoAutoCalculate").checked = !!currentStage.ammo.autoCalculate;
   $("targetCount").value = currentStage.ammo.targetCount || 0;
@@ -243,6 +281,8 @@ function syncStageToForm() {
   renderMags("longGun");
   calculateDifficulty();
   renderObjectForm();
+  if (currentStage.setupListAuto) recalculateSetupList(false);
+  applyTargetNumbering(false);
   updateTopbarMeta();
 }
 
@@ -260,6 +300,16 @@ function readStageFromForm() {
   currentStage.focusAreas = [...$("focusGrid").querySelectorAll("input:checked")].map(i => i.value);
   currentStage.difficultyOverrideEnabled = $("difficultyOverrideEnabled").checked;
   currentStage.difficultyManual = $("difficultyManual").value;
+  currentStage.targetType = $("defaultTargetType").value || "Target";
+  currentStage.targetTypeCustom = $("defaultTargetTypeCustom").value || "";
+  currentStage.targetNumbering = {
+    enabled: $("targetNumberingEnabled").checked,
+    prefix: $("targetNumberingPrefix").value || "T",
+    start: Math.max(1, Number($("targetNumberingStart").value || 1)),
+    mode: "creation-order"
+  };
+  currentStage.setupListAuto = $("setupListAuto").checked;
+  currentStage.setupListText = $("setupListText").value || "";
   const autoCalculate = $("ammoAutoCalculate").checked;
   const targetCount = countTargets();
   const roundsPerTarget = Math.max(1, Number($("roundsPerTarget").value || 2));
@@ -279,6 +329,8 @@ function readStageFromForm() {
   renderWeaponDependent();
   renderAmmoFields();
   calculateDifficulty();
+  if (currentStage.setupListAuto) recalculateSetupList(false);
+  applyTargetNumbering(false);
   markDirty();
 }
 
@@ -289,6 +341,8 @@ function renderWeaponDependent() {
   $("handgunMagWrap").hidden = w === "langwaffe";
   $("longGunMagWrap").hidden = w === "kurzwaffe";
   $("manualDifficultyWrap").hidden = !$("difficultyOverrideEnabled").checked;
+  $("defaultTargetTypeCustomWrap").hidden = $("defaultTargetType").value !== "Custom";
+  $("setupListText").readOnly = $("setupListAuto").checked;
 }
 
 function normalizeAmmoState() {
@@ -318,14 +372,72 @@ function renderAmmoFields() {
 }
 
 function countTargets() {
-  return (currentStage.objects || []).filter(obj => obj.type === "target").length;
+  return (currentStage.objects || []).filter(obj => obj.type === "target" && ((obj.properties || {}).targetVariant || "full") !== "no-shoot").length;
+}
+
+function stageTargetTypeLabel() {
+  const selected = currentStage.targetType || currentStage.defaultTargetType || "Target";
+  if (selected === "Custom") return currentStage.targetTypeCustom || currentStage.defaultTargetTypeCustom || "Custom";
+  return selected;
+}
+
+function targetVariantLabel(obj, withDirection = false) {
+  const props = obj.properties || {};
+  const variant = props.targetVariant || "full";
+  if (variant === "custom") return props.customTargetVariant || "Custom";
+  const found = targetVariants.find(v => v.value === variant);
+  const base = found ? found.label : "Voll";
+  if (!withDirection || !["half", "partial"].includes(variant)) return base;
+  const dir = props.variantDirection || "right";
+  const dirLabel = (variantDirections.find(d => d.value === dir) || variantDirections[1]).label.toLowerCase();
+  return `${base} ${dirLabel}`;
+}
+
+function applyTargetNumbering(force) {
+  if (!currentStage.targetNumbering || !currentStage.targetNumbering.enabled) return;
+  let index = Math.max(1, Number(currentStage.targetNumbering.start || 1));
+  const prefix = currentStage.targetNumbering.prefix || "T";
+  (currentStage.objects || []).forEach(obj => {
+    if (obj.type !== "target") return;
+    const autoPrefix = `${prefix}`;
+    const shouldUpdate = force || !obj.label || obj.label.startsWith(autoPrefix);
+    if (shouldUpdate) obj.label = `${prefix}${index}`;
+    index += 1;
+  });
+}
+
+function recalculateSetupList(overwriteText) {
+  const counts = new Map();
+  const stageType = stageTargetTypeLabel();
+  (currentStage.objects || []).forEach(obj => {
+    if (obj.type === "note") return;
+    if (obj.type === "arrow") return;
+    if (obj.type === "target") {
+      const variant = (obj.properties && obj.properties.targetVariant) || "full";
+      const key = variant === "full"
+        ? `${stageType}`
+        : variant === "no-shoot"
+          ? `${stageType}, No-Shoot`
+          : `${stageType}, ${targetVariantLabel(obj, true)}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+      return;
+    }
+    const name = (objectTypes[obj.type] && objectTypes[obj.type].label) || obj.type;
+    counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  const lines = [...counts.entries()].map(([label, count]) => `${count}x ${label}`);
+  const text = lines.join("\n");
+  if (overwriteText || $("setupListAuto").checked) {
+    $("setupListText").value = text;
+    currentStage.setupListText = text;
+  }
 }
 
 function calculateDifficulty() {
   const focus = new Set(currentStage.focusAreas);
   const objects = currentStage.objects || [];
   const targetCount = objects.filter(obj => obj.type === "target").length;
-  const noShootCount = objects.filter(obj => obj.type === "noShoot").length;
+  const noShootCount = objects.filter(obj => obj.type === "target" && ((obj.properties || {}).targetVariant || "full") === "no-shoot").length;
   const backstopCount = objects.filter(obj => obj.type === "backstop").length;
   const lightCount = objects.filter(obj => obj.type === "light").length;
   const isTwoGunDynamic = currentStage.weaponType === "kurzwaffe_langwaffe" && ["dynamisch", "kombiniert"].includes(currentStage.trainingType);
@@ -536,13 +648,16 @@ function appendObjectSymbol(g, obj, b) {
   const theme = symbolTheme[obj.type] || { fill: "#93c5fd", stroke: "#111827" };
   const stroke = theme.stroke;
   if (obj.type === "target") {
-    g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .04, fill: theme.fill, stroke, "stroke-width": .04 }));
-    g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .32, class: "symbol-mark" }));
-    g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .14, class: "symbol-mark" }));
-  } else if (obj.type === "noShoot") {
-    g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .04, fill: theme.fill, stroke: theme.stroke, "stroke-width": .05 }));
-    g.append(el("line", { x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y + b.h, class: "symbol-red" }));
-    g.append(el("line", { x1: b.x + b.w, y1: b.y, x2: b.x, y2: b.y + b.h, class: "symbol-red" }));
+    const variant = ((obj.properties || {}).targetVariant || "full");
+    const isNoShoot = variant === "no-shoot";
+    const targetStroke = isNoShoot ? "#dc2626" : stroke;
+    const targetFill = isNoShoot ? "#f8fafc" : theme.fill;
+    g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .04, fill: targetFill, stroke: targetStroke, "stroke-width": isNoShoot ? .05 : .04 }));
+    if (!isNoShoot) {
+      g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .32, class: "symbol-mark" }));
+      g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .14, class: "symbol-mark" }));
+    }
+    appendTargetVariantOverlay(g, obj, b);
   } else if (obj.type === "start") {
     g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .08, fill: theme.fill, stroke, "stroke-width": .05 }));
     g.append(el("line", { x1: b.x + b.w * .35, y1: b.y + b.h * .75, x2: b.x + b.w * .35, y2: b.y + b.h * .2, class: "symbol-mark" }));
@@ -561,6 +676,30 @@ function appendObjectSymbol(g, obj, b) {
     g.append(el("polygon", { points: `${b.cx},${b.y + b.h * .12} ${b.x + b.w * .36},${b.cy} ${b.cx},${b.cy} ${b.x + b.w * .42},${b.y + b.h * .88} ${b.x + b.w * .68},${b.y + b.h * .42} ${b.cx},${b.y + b.h * .42}`, fill: "#111827", stroke: "#111827", "stroke-width": .01 }));
   } else if (obj.type === "arrow") {
     g.append(el("polygon", { points: `${b.x},${b.y + b.h * .34} ${b.x + b.w * .58},${b.y + b.h * .34} ${b.x + b.w * .58},${b.y + b.h * .14} ${b.x + b.w},${b.cy} ${b.x + b.w * .58},${b.y + b.h * .86} ${b.x + b.w * .58},${b.y + b.h * .66} ${b.x},${b.y + b.h * .66}`, fill: theme.fill, stroke, "stroke-width": .04 }));
+  } else if (obj.type === "popper") {
+    g.append(el("polygon", { points: `${b.cx},${b.y} ${b.x + b.w * .72},${b.y + b.h * .2} ${b.x + b.w * .76},${b.y + b.h * .6} ${b.x + b.w * .64},${b.y + b.h * .84} ${b.x + b.w * .36},${b.y + b.h * .84} ${b.x + b.w * .24},${b.y + b.h * .6} ${b.x + b.w * .28},${b.y + b.h * .2}`, fill: theme.fill, stroke, "stroke-width": .04 }));
+    g.append(el("rect", { x: b.x + b.w * .42, y: b.y + b.h * .84, width: b.w * .16, height: b.h * .12, fill: theme.fill, stroke, "stroke-width": .04 }));
+  } else if (obj.type === "steelPlate") {
+    g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .45, fill: theme.fill, stroke, "stroke-width": .04 }));
+  } else if (obj.type === "swinger") {
+    g.append(el("rect", { x: b.x + b.w * .28, y: b.y + b.h * .24, width: b.w * .44, height: b.h * .54, rx: .04, fill: theme.fill, stroke, "stroke-width": .06 }));
+    g.append(el("rect", { x: b.cx - b.w * .08, y: b.y + b.h * .78, width: b.w * .16, height: b.h * .12, rx: .02, fill: "#111827" }));
+    g.append(el("path", { d: `M ${b.x + b.w * .22} ${b.y + b.h * .58} Q ${b.x + b.w * .12} ${b.y + b.h * .5} ${b.x + b.w * .22} ${b.y + b.h * .42}`, fill: "none", stroke: "#111827", "stroke-width": .06 }));
+    g.append(el("polygon", { points: `${b.x + b.w * .2},${b.y + b.h * .42} ${b.x + b.w * .25},${b.y + b.h * .43} ${b.x + b.w * .22},${b.y + b.h * .47}`, fill: "#111827" }));
+    g.append(el("path", { d: `M ${b.x + b.w * .78} ${b.y + b.h * .42} Q ${b.x + b.w * .88} ${b.y + b.h * .5} ${b.x + b.w * .78} ${b.y + b.h * .58}`, fill: "none", stroke: "#111827", "stroke-width": .06 }));
+    g.append(el("polygon", { points: `${b.x + b.w * .8},${b.y + b.h * .58} ${b.x + b.w * .75},${b.y + b.h * .57} ${b.x + b.w * .78},${b.y + b.h * .53}`, fill: "#111827" }));
+  } else if (obj.type === "mover") {
+    g.append(el("rect", { x: b.x + b.w * .28, y: b.y + b.h * .2, width: b.w * .44, height: b.h * .5, rx: .04, fill: theme.fill, stroke, "stroke-width": .06 }));
+    g.append(el("line", { x1: b.x + b.w * .16, y1: b.y + b.h * .82, x2: b.x + b.w * .84, y2: b.y + b.h * .82, stroke: "#111827", "stroke-width": .06 }));
+    g.append(el("line", { x1: b.x + b.w * .22, y1: b.y + b.h * .9, x2: b.x + b.w * .78, y2: b.y + b.h * .9, stroke: "#111827", "stroke-width": .06 }));
+    g.append(el("polygon", { points: `${b.x + b.w * .22},${b.y + b.h * .9} ${b.x + b.w * .29},${b.y + b.h * .86} ${b.x + b.w * .29},${b.y + b.h * .94}`, fill: "#111827" }));
+    g.append(el("polygon", { points: `${b.x + b.w * .78},${b.y + b.h * .9} ${b.x + b.w * .71},${b.y + b.h * .86} ${b.x + b.w * .71},${b.y + b.h * .94}`, fill: "#111827" }));
+  } else if (obj.type === "plateRack") {
+    for (let i = 0; i < 5; i++) g.append(el("circle", { cx: b.x + b.w * (.14 + i * .18), cy: b.y + b.h * .4, r: Math.min(b.w, b.h) * .13, fill: theme.fill, stroke, "stroke-width": .04 }));
+    g.append(el("line", { x1: b.x + b.w * .06, y1: b.y + b.h * .82, x2: b.x + b.w * .94, y2: b.y + b.h * .82, class: "symbol-mark" }));
+  } else if (obj.type === "activator") {
+    g.append(el("rect", { x: b.x + b.w * .2, y: b.y + b.h * .12, width: b.w * .6, height: b.h * .76, rx: .06, fill: theme.fill, stroke, "stroke-width": .04 }));
+    g.append(el("polygon", { points: `${b.cx},${b.y + b.h * .2} ${b.x + b.w * .42},${b.cy} ${b.cx},${b.cy} ${b.x + b.w * .56},${b.y + b.h * .82} ${b.x + b.w * .68},${b.y + b.h * .5} ${b.cx},${b.y + b.h * .5}`, fill: "#111827", stroke: "#111827", "stroke-width": .01 }));
   } else {
     g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .05, fill: theme.fill, stroke, "stroke-width": .04 }));
     if (obj.type === "wall") g.append(el("line", { x1: b.x, y1: b.cy, x2: b.x + b.w, y2: b.cy, class: "symbol-mark" }));
@@ -570,6 +709,38 @@ function appendObjectSymbol(g, obj, b) {
     }
     if (obj.type === "note") g.append(el("text", { x: b.x + b.w * .18, y: b.y + b.h * .62, "font-size": Math.min(b.w, b.h) * .55, fill: "#111827" }, "T"));
     if (obj.type === "marker") g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .28, class: "symbol-mark" }));
+  }
+}
+
+function appendTargetVariantOverlay(g, obj, b) {
+  const props = obj.properties || {};
+  const variant = props.targetVariant || "full";
+  const direction = props.variantDirection || "right";
+  const mask = "#f8fafc";
+  if (variant === "half") {
+    const ov = direction === "left"
+      ? { x: b.x + b.w * .5, y: b.y, w: b.w * .5, h: b.h }
+      : direction === "right"
+        ? { x: b.x, y: b.y, w: b.w * .5, h: b.h }
+        : direction === "top"
+          ? { x: b.x, y: b.y + b.h * .5, w: b.w, h: b.h * .5 }
+          : { x: b.x, y: b.y, w: b.w, h: b.h * .5 };
+    g.append(el("rect", { x: ov.x, y: ov.y, width: ov.w, height: ov.h, fill: mask, stroke: "none" }));
+  } else if (variant === "partial") {
+    const points = direction === "left"
+      ? `${b.x},${b.y} ${b.x + b.w * .38},${b.y} ${b.x + b.w * .58},${b.y + b.h} ${b.x},${b.y + b.h}`
+      : direction === "right"
+        ? `${b.x + b.w * .42},${b.y} ${b.x + b.w},${b.y} ${b.x + b.w},${b.y + b.h} ${b.x + b.w * .62},${b.y + b.h}`
+        : direction === "top"
+          ? `${b.x},${b.y + b.h * .42} ${b.x + b.w},${b.y + b.h * .18} ${b.x + b.w},${b.y} ${b.x},${b.y}`
+          : `${b.x},${b.y + b.h} ${b.x + b.w},${b.y + b.h} ${b.x + b.w},${b.y + b.h * .58} ${b.x},${b.y + b.h * .78}`;
+    g.append(el("polygon", { points, fill: "#e5e7eb", stroke: "#cbd5e1", "stroke-width": .03 }));
+  } else if (variant === "head-only") {
+    g.append(el("rect", { x: b.x, y: b.y + b.h * .34, width: b.w, height: b.h * .66, fill: mask, stroke: "none" }));
+  }
+  if (variant === "no-shoot") {
+    g.append(el("line", { x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y + b.h, class: "symbol-red" }));
+    g.append(el("line", { x1: b.x + b.w, y1: b.y, x2: b.x, y2: b.y + b.h, class: "symbol-red" }));
   }
 }
 
@@ -591,11 +762,21 @@ function addObject(type) {
     label: "",
     properties: {}
   };
+  if (type === "target") {
+    obj.properties = {
+      targetVariant: "full",
+      variantDirection: "right",
+      customTargetVariant: "",
+      targetNote: ""
+    };
+  }
   applyCenterBounds(obj);
   currentStage.objects.push(obj);
+  if (type === "target") applyTargetNumbering(false);
   selectedObjectId = obj.id;
   renderAmmoFields();
   calculateDifficulty();
+  if (currentStage.setupListAuto) recalculateSetupList(true);
   renderStage();
   renderObjectForm();
   markDirty();
@@ -646,6 +827,8 @@ function renderObjectForm() {
     $("objectForm").textContent = "Kein Objekt ausgewählt";
     return;
   }
+  const isTarget = obj.type === "target";
+  const props = obj.properties || {};
   $("objectForm").className = "object-form";
   $("objectForm").innerHTML = `
     <div class="object-actions object-actions-panel">
@@ -663,15 +846,39 @@ function renderObjectForm() {
       <label>Höhe/Tiefe m<input id="objH" type="number" step="0.1" min="0.1"></label>
       <label>Rotation °<input id="objRot" type="number" step="5"></label>
       <label>Label<input id="objLabel"></label>
-    </div>`;
+    </div>
+    ${isTarget ? `
+    <label>Scheibenvariante<select id="objTargetVariant">
+      ${targetVariants.map(v => `<option value="${v.value}">${v.label}</option>`).join("")}
+    </select></label>
+    <label id="objVariantDirectionWrap">Richtung<select id="objVariantDirection">
+      ${variantDirections.map(v => `<option value="${v.value}">${v.label}</option>`).join("")}
+    </select></label>
+    <label id="objTargetVariantCustomWrap">Custom Variant Text<input id="objTargetVariantCustom"></label>
+    <label>Zielnotiz<textarea id="objTargetNote" rows="2"></textarea></label>
+    ` : ""}`;
   const center = objectCenterM(obj);
   $("objType").value = obj.type; $("objX").value = round2(center.x); $("objY").value = round2(center.y);
   $("objW").value = obj.widthM; $("objH").value = obj.heightM; $("objRot").value = obj.rotation; $("objLabel").value = obj.label || "";
+  if (isTarget) {
+    $("objTargetVariant").value = props.targetVariant || "full";
+    $("objVariantDirection").value = props.variantDirection || "right";
+    $("objTargetVariantCustom").value = props.customTargetVariant || "";
+    $("objTargetNote").value = props.targetNote || "";
+    $("objVariantDirectionWrap").hidden = !["half", "partial"].includes($("objTargetVariant").value);
+    $("objTargetVariantCustomWrap").hidden = $("objTargetVariant").value !== "custom";
+    $("objTargetVariant").addEventListener("input", () => {
+      $("objTargetVariantCustomWrap").hidden = $("objTargetVariant").value !== "custom";
+      $("objVariantDirectionWrap").hidden = !["half", "partial"].includes($("objTargetVariant").value);
+      readObjectForm();
+    });
+  }
   $("objRotateLeft").addEventListener("click", () => rotateSelectedObject(-15));
   $("objRotateRight").addEventListener("click", () => rotateSelectedObject(15));
   $("objDuplicate").addEventListener("click", duplicateSelectedObject);
   $("objDelete").addEventListener("click", deleteSelectedObject);
   ["objType", "objX", "objY", "objW", "objH", "objRot", "objLabel"].forEach(id => $(id).addEventListener("input", readObjectForm));
+  if (isTarget) ["objVariantDirection", "objTargetVariantCustom", "objTargetNote"].forEach(id => $(id).addEventListener("input", readObjectForm));
   updateObjectActionBar();
 }
 
@@ -679,6 +886,7 @@ function readObjectForm() {
   const obj = selectedObject();
   if (!obj) return;
   obj.type = $("objType").value;
+  obj.properties = obj.properties || {};
   obj.widthM = Math.max(.1, Number($("objW").value || .1));
   obj.heightM = Math.max(.1, Number($("objH").value || .1));
   const centerX = Number($("objX").value || 0);
@@ -688,6 +896,13 @@ function readObjectForm() {
   applyCenterBounds(obj);
   obj.rotation = Number($("objRot").value || 0);
   obj.label = $("objLabel").value;
+  if (obj.type === "target") {
+    obj.properties.targetVariant = $("objTargetVariant") ? $("objTargetVariant").value : (obj.properties.targetVariant || "full");
+    obj.properties.variantDirection = $("objVariantDirection") ? $("objVariantDirection").value : (obj.properties.variantDirection || "right");
+    obj.properties.customTargetVariant = $("objTargetVariantCustom") ? $("objTargetVariantCustom").value : (obj.properties.customTargetVariant || "");
+    obj.properties.targetNote = $("objTargetNote") ? $("objTargetNote").value : (obj.properties.targetNote || "");
+  }
+  if (currentStage.setupListAuto) recalculateSetupList(true);
   renderStage();
   markDirty();
 }
@@ -715,6 +930,8 @@ function deleteSelectedObject() {
   selectedObjectId = null;
   renderAmmoFields();
   calculateDifficulty();
+  applyTargetNumbering(false);
+  if (currentStage.setupListAuto) recalculateSetupList(true);
   renderStage();
   renderObjectForm();
   markDirty();
@@ -740,9 +957,11 @@ function duplicateSelectedObject() {
   copy.yM = round2(copy.yM + .5);
   applyCenterBounds(copy);
   currentStage.objects.push(copy);
+  if (copy.type === "target") applyTargetNumbering(false);
   selectedObjectId = copy.id;
   renderAmmoFields();
   calculateDifficulty();
+  if (currentStage.setupListAuto) recalculateSetupList(true);
   renderStage();
   renderObjectForm();
   activateTab("object");
