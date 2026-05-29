@@ -1,6 +1,6 @@
 const focusAreas = [
   "Präzision", "Speed", "Draw / Ready", "Reloads", "Störungen", "Zielwechsel",
-  "Bewegung", "Deckung / Barrikade", "Entscheidung / No-Shoot", "Licht / Reaktion",
+  "Bewegung", "Deckung / Wand", "Entscheidung / No-Shoot", "Licht / Reaktion",
   "Einhand", "Langwaffe", "Waffenwechsel", "Team", "Standard / Test"
 ];
 const targetTypes = ["IPSC Target", "IDPA Target", "CMA Target", "Target", "Manscheibe", "Belgische Zielscheibe", "Custom"];
@@ -37,15 +37,56 @@ let stages = [];
 let activeRange = null;
 let editingRange = null;
 let appSettings = { authorName: "", customFooterText: "", defaultVersion: "v1.0" };
-let currentStage = blankStage();
+let currentStage = null;
 let selectedObjectId = null;
+let selectedObjectIds = new Set();
 let dragState = null;
 let stageDirty = false;
+let snapEnabled = true;
+let alignmentGuides = [];
+let undoStack = [];
+let redoStack = [];
+let pendingObjectFormSnapshot = null;
+let objectFormHistoryTimer = null;
+
+const HISTORY_LIMIT = 60;
+const SNAP_THRESHOLD_M = 0.16;
+const CURRENT_STAGE_ID_KEY = "stagebuilder-current-stage-id";
+const CURRENT_STAGE_DIRTY_KEY = "stagebuilder-current-stage-dirty";
+
+const lightModes = [
+  { value: "color", label: "Color" },
+  { value: "false-color", label: "False Color" },
+  { value: "delay", label: "Delay" },
+  { value: "timeout", label: "Timeout" }
+];
+const lightColors = [
+  { value: "#FF2A2A", label: "Rot" },
+  { value: "#42C96A", label: "Grün" },
+  { value: "#3A84F7", label: "Blau" },
+  { value: "#D9C900", label: "Gelb" },
+  { value: "#C24AF5", label: "Violett" },
+  { value: "#25CFF5", label: "Cyan" }
+];
+const lightTimerSteps = [
+  { value: "infinite", label: "∞" },
+  { value: "10", label: "10 s" },
+  { value: "15", label: "15 s" },
+  { value: "30", label: "30 s" },
+  { value: "45", label: "45 s" },
+  { value: "60", label: "1 min" },
+  { value: "120", label: "2 min" },
+  { value: "180", label: "3 min" },
+  { value: "300", label: "5 min" },
+  { value: "600", label: "10 min" }
+];
+const structureTypes = new Set(["wall", "window", "door"]);
 
 const renderOrder = {
   wall: 10,
+  window: 11,
+  door: 12,
   backstop: 20,
-  barricade: 30,
   barrel: 40,
   cone: 40,
   light: 40,
@@ -87,6 +128,7 @@ function blankStage(rangeId = null) {
     targetNumbering: { enabled: false, prefix: "T", start: 1, mode: "creation-order" },
     setupListAuto: true,
     setupListText: "",
+    lightSettings: defaultLightProperties(),
     ammo: { autoCalculate: true, targetCount: 0, roundsPerTarget: 2, roundsPerRun: 0, runs: 1, roundsPerShooterTotal: 0, manualAmmoNote: "" },
     magPrep: {
       handgun: { magazineCount: 3, magazines: defaultMags(3) },
@@ -137,25 +179,63 @@ function updateTopbarMeta() {
 
 function markDirty() {
   stageDirty = true;
+  localStorage.setItem(CURRENT_STAGE_DIRTY_KEY, "1");
   setSaveState("dirty", "Ungespeicherte Änderungen");
 }
 
+function rememberSavedStageReference() {
+  if (currentStage && currentStage.id) {
+    localStorage.setItem(CURRENT_STAGE_ID_KEY, String(currentStage.id));
+    localStorage.setItem(CURRENT_STAGE_DIRTY_KEY, "0");
+  } else {
+    localStorage.removeItem(CURRENT_STAGE_ID_KEY);
+    localStorage.setItem(CURRENT_STAGE_DIRTY_KEY, "1");
+  }
+}
+
+function clearSavedStageReference() {
+  localStorage.removeItem(CURRENT_STAGE_ID_KEY);
+  localStorage.setItem(CURRENT_STAGE_DIRTY_KEY, "1");
+}
+
 async function init() {
+  snapEnabled = localStorage.getItem("stagebuilder-snap-enabled") !== "0";
+  $("snapToggle").checked = snapEnabled;
   buildFocusGrid();
   bindEvents();
   initToolbarGroups();
   await loadSettings();
   await loadRanges();
   await loadStages();
-  activeRange = ranges[0] || null;
-  currentStage = blankStage(activeRange ? activeRange.id : null);
-  currentStage.version = "v1.0";
+  const restored = await restoreSavedStageReference();
+  if (!restored) {
+    activeRange = ranges[0] || null;
+    currentStage = blankStage(activeRange ? activeRange.id : null);
+    currentStage.version = "v1.0";
+    localStorage.setItem(CURRENT_STAGE_DIRTY_KEY, "0");
+  }
   syncStageToForm();
   renderRangeSelect();
   renderStage();
   updateTopbarMeta();
   setSaveState("saved", "Gespeichert");
   setStatus(activeRange ? "Bereit" : "Bitte zuerst einen Schiesskeller erstellen");
+}
+
+async function restoreSavedStageReference() {
+  const storedId = localStorage.getItem(CURRENT_STAGE_ID_KEY);
+  const wasDirty = localStorage.getItem(CURRENT_STAGE_DIRTY_KEY) === "1";
+  if (!storedId || wasDirty) return false;
+  try {
+    const payload = await api(`/api/stages/${storedId}`);
+    currentStage = payload.stage;
+    activeRange = payload.range || ranges.find(r => r.id === currentStage.rangeId) || ranges[0] || null;
+    stageDirty = false;
+    return true;
+  } catch {
+    localStorage.removeItem(CURRENT_STAGE_ID_KEY);
+    return false;
+  }
 }
 
 function initToolbarGroups() {
@@ -213,6 +293,13 @@ function bindEvents() {
   $("rotateRightBtn").addEventListener("click", () => rotateSelectedObject(15));
   $("duplicateObjectBtn").addEventListener("click", duplicateSelectedObject);
   $("deleteObjectBtn").addEventListener("click", deleteSelectedObject);
+  $("undoBtn").addEventListener("click", undoEditor);
+  $("redoBtn").addEventListener("click", redoEditor);
+  $("snapToggle").addEventListener("change", () => {
+    snapEnabled = $("snapToggle").checked;
+    localStorage.setItem("stagebuilder-snap-enabled", snapEnabled ? "1" : "0");
+    setStatus(snapEnabled ? "Snap aktiv" : "Snap deaktiviert");
+  });
   document.addEventListener("keydown", handleShortcuts);
   ["stageName", "stageVersion", "description", "trainingGoal", "procedure", "safetyNotes", "trainingType", "weaponType",
     "startPositionHandgun", "startPositionLongGun", "difficultyManual", "manualAmmoNote", "defaultTargetType", "defaultTargetTypeCustom",
@@ -221,6 +308,12 @@ function bindEvents() {
   });
   ["ammoAutoCalculate", "roundsPerTarget", "roundsPerRun", "runs"].forEach(id => $(id).addEventListener("input", () => { readStageFromForm(); renderAmmoFields(); }));
   $("ammoAutoCalculate").addEventListener("change", () => { readStageFromForm(); renderAmmoFields(); });
+  ["stageLightMode", "stageLightColor", "stageLightDelay", "stageLightTimeout", "stageLightTimer", "stageLightCounts", "stageLightSensorMode", "stageLightProbability"].forEach(id => {
+    $(id).addEventListener("input", () => { readStageFromForm(); renderStage(); });
+  });
+  document.querySelectorAll("input[name='stageLightLimitType']").forEach(input => {
+    input.addEventListener("change", () => { readStageFromForm(); renderStageLightLimitFields(); renderStage(); });
+  });
   $("difficultyOverrideEnabled").addEventListener("change", readStageFromForm);
   $("targetNumberingEnabled").addEventListener("change", () => { readStageFromForm(); applyTargetNumbering(false); renderStage(); });
   $("setupListAuto").addEventListener("change", () => { readStageFromForm(); if ($("setupListAuto").checked) recalculateSetupList(true); renderWeaponDependent(); });
@@ -231,6 +324,10 @@ function bindEvents() {
   $("newRangeBtn").addEventListener("click", newEditingRange);
   $("saveRangeBtn").addEventListener("click", saveRange);
   $("deleteRangeBtn").addEventListener("click", deleteRange);
+  ["stageSearch", "stageFilterRange", "stageFilterWeapon", "stageFilterDifficulty", "stageFilterFocus"].forEach(id => {
+    $(id).addEventListener("input", renderStageLoadList);
+    $(id).addEventListener("change", renderStageLoadList);
+  });
   ["rangeName", "rangeDescription", "rangeWidth", "rangeHeight", "rangeGrid", "rangePpm", "rangeNotes"].forEach(id => {
     $(id).addEventListener("input", () => { readEditingRange(); renderBoundaryEditor(); });
   });
@@ -239,7 +336,82 @@ function bindEvents() {
 function updateObjectActionBar() {
   const bar = $("objectActionsBar");
   if (!bar) return;
-  bar.hidden = !selectedObject();
+  const count = selectedObjects().length;
+  bar.hidden = count === 0;
+  const title = bar.querySelector(".object-actions-title");
+  if (title) title.textContent = count > 1 ? `${count} Objekte:` : "Objekt-Aktionen:";
+  const locked = selectedObjects().some(obj => obj.locked);
+  ["rotateLeftBtn", "rotateRightBtn", "duplicateObjectBtn", "deleteObjectBtn"].forEach(id => {
+    if ($(id)) $(id).disabled = locked;
+  });
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  if ($("undoBtn")) $("undoBtn").disabled = undoStack.length === 0;
+  if ($("redoBtn")) $("redoBtn").disabled = redoStack.length === 0;
+}
+
+function cloneObjects() {
+  return JSON.parse(JSON.stringify(currentStage.objects || []));
+}
+
+function captureEditorState() {
+  return {
+    objects: cloneObjects(),
+    selectedId: selectedObjectId,
+    selectedIds: [...selectedObjectIds]
+  };
+}
+
+function restoreEditorState(state) {
+  currentStage.objects = JSON.parse(JSON.stringify(state.objects || []));
+  selectedObjectId = state.selectedId || null;
+  selectedObjectIds = new Set(state.selectedIds || []);
+  if (selectedObjectId && !selectedObjectIds.has(selectedObjectId)) selectedObjectIds.add(selectedObjectId);
+  renderAmmoFields();
+  renderStageLightSettings();
+  calculateDifficulty();
+  applyTargetNumbering(false);
+  if (currentStage.setupListAuto) recalculateSetupList(true);
+  renderStage();
+  renderObjectForm();
+  markDirty();
+}
+
+function statesEqual(a, b) {
+  return JSON.stringify(a.objects || []) === JSON.stringify(b.objects || []);
+}
+
+function pushUndoState(state = captureEditorState()) {
+  undoStack.push(state);
+  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  redoStack = [];
+  updateHistoryButtons();
+}
+
+function undoEditor() {
+  if (!undoStack.length) return;
+  const current = captureEditorState();
+  const previous = undoStack.pop();
+  redoStack.push(current);
+  restoreEditorState(previous);
+  setStatus("Undo");
+}
+
+function redoEditor() {
+  if (!redoStack.length) return;
+  const current = captureEditorState();
+  const next = redoStack.pop();
+  undoStack.push(current);
+  restoreEditorState(next);
+  setStatus("Redo");
+}
+
+function resetEditorHistory() {
+  undoStack = [];
+  redoStack = [];
+  updateHistoryButtons();
 }
 
 function activateTab(tab) {
@@ -294,6 +466,7 @@ function syncStageToForm() {
   $("targetNumberingStart").value = (currentStage.targetNumbering && currentStage.targetNumbering.start) || 1;
   $("setupListAuto").checked = currentStage.setupListAuto !== false;
   $("setupListText").value = currentStage.setupListText || "";
+  syncLightSettingsToForm();
   normalizeAmmoState();
   $("ammoAutoCalculate").checked = !!currentStage.ammo.autoCalculate;
   $("targetCount").value = currentStage.ammo.targetCount || 0;
@@ -305,6 +478,7 @@ function syncStageToForm() {
   $("handgunMagCount").value = currentStage.magPrep.handgun.magazineCount;
   $("longGunMagCount").value = currentStage.magPrep.longGun.magazineCount;
   renderWeaponDependent();
+  renderStageLightSettings();
   renderAmmoFields();
   renderMags("handgun");
   renderMags("longGun");
@@ -339,6 +513,7 @@ function readStageFromForm() {
   };
   currentStage.setupListAuto = $("setupListAuto").checked;
   currentStage.setupListText = $("setupListText").value || "";
+  readLightSettingsFromForm();
   const autoCalculate = $("ammoAutoCalculate").checked;
   const components = ammoComponents();
   const targetCount = components.baseTargets;
@@ -357,7 +532,9 @@ function readStageFromForm() {
   readMags("handgun");
   readMags("longGun");
   renderWeaponDependent();
+  renderStageLightSettings();
   renderAmmoFields();
+  renderStageLightSettings();
   calculateDifficulty();
   if (currentStage.setupListAuto) recalculateSetupList(false);
   applyTargetNumbering(false);
@@ -373,6 +550,55 @@ function renderWeaponDependent() {
   $("manualDifficultyWrap").hidden = !$("difficultyOverrideEnabled").checked;
   $("defaultTargetTypeCustomWrap").hidden = $("defaultTargetType").value !== "Custom";
   $("setupListText").readOnly = $("setupListAuto").checked;
+}
+
+function hasLights() {
+  return (currentStage.objects || []).some(obj => obj.type === "light");
+}
+
+function syncLightSettingsToForm() {
+  currentStage.lightSettings = defaultLightProperties(currentStage.lightSettings || {});
+  const light = currentStage.lightSettings;
+  $("stageLightMode").value = light.mode;
+  $("stageLightColor").value = light.color;
+  $("stageLightDelay").value = light.delaySeconds.toFixed(1);
+  $("stageLightTimeout").value = light.timeoutSeconds.toFixed(1);
+  document.querySelectorAll("input[name='stageLightLimitType']").forEach(input => input.checked = input.value === light.limitType);
+  $("stageLightTimer").value = light.timerValue;
+  $("stageLightCounts").value = light.counts;
+  $("stageLightSensorMode").checked = light.sensorMode;
+  $("stageLightProbability").value = String(light.probability);
+  renderStageLightLimitFields();
+}
+
+function readLightSettingsFromForm() {
+  if (!$("stageLightMode")) return;
+  currentStage.lightSettings = defaultLightProperties({
+    mode: $("stageLightMode").value,
+    color: $("stageLightColor").value,
+    delaySeconds: $("stageLightDelay").value,
+    timeoutSeconds: $("stageLightTimeout").value,
+    limitType: (document.querySelector("input[name='stageLightLimitType']:checked") || {}).value,
+    timerValue: $("stageLightTimer").value,
+    counts: $("stageLightCounts").value,
+    sensorMode: $("stageLightSensorMode").checked,
+    probability: $("stageLightProbability").value
+  });
+}
+
+function renderStageLightSettings() {
+  const panel = $("lightSettingsPanel");
+  if (!panel) return;
+  panel.hidden = !hasLights();
+  renderStageLightLimitFields();
+}
+
+function renderStageLightLimitFields() {
+  if (!$("stageLightTimerWrap") || !$("stageLightCountsWrap")) return;
+  const checked = document.querySelector("input[name='stageLightLimitType']:checked");
+  const limitType = checked ? checked.value : "timer";
+  $("stageLightTimerWrap").hidden = limitType !== "timer";
+  $("stageLightCountsWrap").hidden = limitType !== "counts";
 }
 
 function normalizeAmmoState() {
@@ -438,6 +664,101 @@ function targetVariantLabel(obj, withDirection = false) {
   const dir = props.variantDirection || "right";
   const dirLabel = (variantDirections.find(d => d.value === dir) || variantDirections[1]).label.toLowerCase();
   return `${base} ${dirLabel}`;
+}
+
+function defaultLightProperties(existing = {}) {
+  const color = lightColors.some(item => item.value === existing.color) ? existing.color : "#FF2A2A";
+  const mode = lightModes.some(item => item.value === existing.mode) ? existing.mode : "color";
+  const limitType = existing.limitType === "counts" ? "counts" : "timer";
+  const timerValue = lightTimerSteps.some(item => item.value === String(existing.timerValue)) ? String(existing.timerValue) : "infinite";
+  const rawProbability = existing.probability == null ? 100 : existing.probability;
+  const probability = Math.max(0, Math.min(100, Math.round(Number(rawProbability) / 10) * 10));
+  return {
+    mode,
+    color,
+    delaySeconds: round1(Math.max(0, Number(existing.delaySeconds || 0))),
+    timeoutSeconds: round1(Math.max(0, Number(existing.timeoutSeconds || 0))),
+    limitType,
+    timerValue,
+    counts: Math.max(1, Math.round(Number(existing.counts || 1))),
+    sensorMode: !!existing.sensorMode,
+    probability
+  };
+}
+
+function lightColor(obj) {
+  return defaultLightProperties(currentStage.lightSettings || (obj && obj.properties) || {}).color;
+}
+
+function defaultStructureProperties(type, existing = {}) {
+  if (type === "window") {
+    return normalizeWindowProperties({ openingWidthM: 1.0, openingPosition: "center", openingOffsetM: null, ...existing }, 2.0);
+  }
+  if (type === "door") {
+    return normalizeDoorProperties({
+      doorWidthM: 0.9,
+      doorPosition: "center",
+      openingOffsetM: null,
+      hingeSide: "left",
+      swingDirection: "in",
+      openAngle: 90,
+      ...existing
+    }, 2.0);
+  }
+  return {};
+}
+
+function normalizeOpeningWidth(value, lengthM) {
+  return Math.max(.1, Math.min(Number(value || 1), Math.max(.1, Number(lengthM || 1))));
+}
+
+function normalizeOpeningOffset(value, openingWidthM, lengthM) {
+  const maxOffset = Math.max(0, Number(lengthM || 0) - Number(openingWidthM || 0));
+  return round2(clamp(Number(value || 0), 0, maxOffset));
+}
+
+function normalizeWindowProperties(props, lengthM) {
+  const openingWidthM = normalizeOpeningWidth(props.openingWidthM, lengthM);
+  const position = ["center", "left", "right", "free"].includes(props.openingPosition) ? props.openingPosition : "center";
+  return {
+    openingWidthM,
+    openingPosition: position,
+    openingOffsetM: position === "free" ? normalizeOpeningOffset(props.openingOffsetM, openingWidthM, lengthM) : null
+  };
+}
+
+function normalizeDoorProperties(props, lengthM) {
+  const doorWidthM = normalizeOpeningWidth(props.doorWidthM, lengthM);
+  const position = ["center", "left", "right", "free"].includes(props.doorPosition) ? props.doorPosition : "center";
+  const angle = [45, 90, 120].includes(Number(props.openAngle)) ? Number(props.openAngle) : 90;
+  return {
+    doorWidthM,
+    doorPosition: position,
+    openingOffsetM: position === "free" ? normalizeOpeningOffset(props.openingOffsetM, doorWidthM, lengthM) : null,
+    hingeSide: props.hingeSide === "right" ? "right" : "left",
+    swingDirection: props.swingDirection === "out" ? "out" : "in",
+    openAngle: angle
+  };
+}
+
+function openingStart(lengthM, openingWidthM, position, offsetM) {
+  const maxStart = Math.max(0, Number(lengthM || 0) - Number(openingWidthM || 0));
+  if (position === "left") return 0;
+  if (position === "right") return maxStart;
+  if (position === "free") return normalizeOpeningOffset(offsetM, openingWidthM, lengthM);
+  return round2(maxStart / 2);
+}
+
+function getOpeningSegments(lengthM, openingWidthM, position, offsetM) {
+  const start = openingStart(lengthM, openingWidthM, position, offsetM);
+  const end = start + openingWidthM;
+  return {
+    openingStartM: start,
+    openingEndM: end,
+    leftM: Math.max(0, start),
+    rightStartM: Math.min(lengthM, end),
+    rightM: Math.max(0, lengthM - end)
+  };
 }
 
 function applyTargetNumbering(force) {
@@ -549,13 +870,14 @@ function renderStage() {
   renderMeterMarks(svg, width, height);
   renderBoundarySegments(svg, activeRange, false);
   const ordered = sortedObjects();
-  ordered.filter(obj => obj.id !== selectedObjectId).forEach(obj => svg.append(objectNode(obj)));
-  const selected = selectedObject();
-  if (selected) svg.append(objectNode(selected));
+  ordered.filter(obj => !selectedObjectIds.has(obj.id)).forEach(obj => svg.append(objectNode(obj)));
+  const selectedList = selectedObjects();
+  selectedList.forEach(obj => svg.append(objectNode(obj)));
   ordered.forEach(obj => {
     if (obj.label) svg.append(labelNode(obj));
   });
-  if (selected) svg.append(selectionNode(selected));
+  alignmentGuides.forEach(guide => svg.append(alignmentGuideNode(guide, width, height)));
+  selectedList.forEach(obj => svg.append(selectionNode(obj)));
   updateObjectActionBar();
   svg.onpointermove = onPointerMove;
   svg.onpointerup = endDrag;
@@ -641,8 +963,14 @@ function activeSet(items) {
 
 function objectNode(obj) {
   const box = displayBox(obj);
-  const g = el("g", { class: "stage-object", transform: `rotate(${obj.rotation || 0} ${box.cx} ${box.cy})` });
+  const classes = ["stage-object"];
+  if (obj.locked) classes.push("locked");
+  if (selectedObjectIds.has(obj.id)) classes.push("selected");
+  const g = el("g", { class: classes.join(" "), transform: `rotate(${obj.rotation || 0} ${box.cx} ${box.cy})` });
   appendObjectSymbol(g, obj, box);
+  if (obj.locked) {
+    g.append(el("text", { x: box.x + box.w + .08, y: box.y + .18, class: "lock-mark" }, "LOCK"));
+  }
   g.addEventListener("pointerdown", (event) => startDrag(event, obj.id));
   return g;
 }
@@ -665,6 +993,13 @@ function selectionNode(obj) {
   });
 }
 
+function alignmentGuideNode(guide, width, height) {
+  if (guide.axis === "x") {
+    return el("line", { x1: guide.value, y1: 0, x2: guide.value, y2: height, class: "alignment-guide" });
+  }
+  return el("line", { x1: 0, y1: guide.value, x2: width, y2: guide.value, class: "alignment-guide" });
+}
+
 function getObjectGeometry(obj, scale, stageOriginX, stageOriginY) {
   const spec = symbolContract.objects[obj.type] || {};
   const ppm = Math.max(10, Number(activeRange ? activeRange.pixelsPerMeter : 32));
@@ -678,7 +1013,7 @@ function getObjectGeometry(obj, scale, stageOriginX, stageOriginY) {
     widthPx = Number(spec.visualWidthPx || 16) / ppm * scale;
     heightPx = Number(spec.visualHeightPx || 16) / ppm * scale;
   } else {
-    const minM = Math.max(.22, 20 / ppm);
+    const minM = structureTypes.has(obj.type) ? 0.02 : Math.max(.22, 20 / ppm);
     widthPx = Math.max(realW, minM) * scale;
     heightPx = Math.max(realH, minM) * scale;
   }
@@ -722,11 +1057,14 @@ function appendObjectSymbol(g, obj, b) {
   } else if (obj.type === "cone") {
     g.append(el("polygon", { points: `${b.cx},${b.y} ${b.x + b.w * .88},${b.y + b.h * .9} ${b.x + b.w * .12},${b.y + b.h * .9}`, fill: theme.fill, stroke, "stroke-width": .04 }));
     g.append(el("line", { x1: b.x + b.w * .3, y1: b.y + b.h * .62, x2: b.x + b.w * .7, y2: b.y + b.h * .62, class: "symbol-mark" }));
-  } else if (obj.type === "barricade") {
-    g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .03, fill: theme.fill, stroke, "stroke-width": .04 }));
-    for (let i = .2; i < .9; i += .25) g.append(el("line", { x1: b.x + b.w * i, y1: b.y, x2: b.x + b.w * (i - .18), y2: b.y + b.h, class: "symbol-mark" }));
+  } else if (obj.type === "wall") {
+    drawWallSvg(g, b, theme);
+  } else if (obj.type === "window") {
+    drawWindowSvg(g, obj, b, theme);
+  } else if (obj.type === "door") {
+    drawDoorSvg(g, obj, b, theme);
   } else if (obj.type === "light") {
-    g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .08, fill: theme.fill, stroke, "stroke-width": .04 }));
+    g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .08, fill: lightColor(obj), stroke, "stroke-width": .04 }));
     g.append(el("polygon", { points: `${b.cx},${b.y + b.h * .12} ${b.x + b.w * .36},${b.cy} ${b.cx},${b.cy} ${b.x + b.w * .42},${b.y + b.h * .88} ${b.x + b.w * .68},${b.y + b.h * .42} ${b.cx},${b.y + b.h * .42}`, fill: "#111827", stroke: "#111827", "stroke-width": .01 }));
   } else if (obj.type === "arrow") {
     g.append(el("polygon", { points: `${b.x},${b.y + b.h * .34} ${b.x + b.w * .58},${b.y + b.h * .34} ${b.x + b.w * .58},${b.y + b.h * .14} ${b.x + b.w},${b.cy} ${b.x + b.w * .58},${b.y + b.h * .86} ${b.x + b.w * .58},${b.y + b.h * .66} ${b.x},${b.y + b.h * .66}`, fill: theme.fill, stroke, "stroke-width": .04 }));
@@ -762,7 +1100,6 @@ function appendObjectSymbol(g, obj, b) {
     g.append(el("polygon", { points: `${b.cx},${b.y + b.h * .2} ${b.x + b.w * .42},${b.cy} ${b.cx},${b.cy} ${b.x + b.w * .56},${b.y + b.h * .82} ${b.x + b.w * .68},${b.y + b.h * .5} ${b.cx},${b.y + b.h * .5}`, fill: "#111827", stroke: "#111827", "stroke-width": .01 }));
   } else {
     g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .05, fill: theme.fill, stroke, "stroke-width": .04 }));
-    if (obj.type === "wall") g.append(el("line", { x1: b.x, y1: b.cy, x2: b.x + b.w, y2: b.cy, class: "symbol-mark" }));
     if (obj.type === "backstop") {
       g.append(el("polygon", { points: `${b.x + b.w * .08},${b.y + b.h * .15} ${b.x + b.w * .92},${b.y + b.h * .15} ${b.x + b.w * .82},${b.y + b.h * .85} ${b.x + b.w * .18},${b.y + b.h * .85}`, fill: theme.fill, stroke, "stroke-width": .04 }));
       g.append(el("line", { x1: b.x + b.w * .26, y1: b.cy, x2: b.x + b.w * .74, y2: b.cy, stroke: theme.accent, "stroke-width": .04 }));
@@ -770,6 +1107,50 @@ function appendObjectSymbol(g, obj, b) {
     if (obj.type === "note") g.append(el("text", { x: b.x + b.w * .18, y: b.y + b.h * .62, "font-size": Math.min(b.w, b.h) * .55, fill: "#111827" }, "T"));
     if (obj.type === "marker") g.append(el("circle", { cx: b.cx, cy: b.cy, r: Math.min(b.w, b.h) * .28, class: "symbol-mark" }));
   }
+}
+
+function drawWallSvg(g, b, theme) {
+  g.append(el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: .015, fill: theme.fill, stroke: theme.stroke, "stroke-width": .045 }));
+}
+
+function addWallSegmentSvg(g, x, y, w, h, theme) {
+  if (w <= 0) return;
+  g.append(el("rect", { x, y, width: w, height: h, rx: .01, fill: theme.fill, stroke: theme.stroke, "stroke-width": .045 }));
+}
+
+function drawWindowSvg(g, obj, b, theme) {
+  const props = normalizeWindowProperties(obj.properties || {}, obj.widthM);
+  const seg = getOpeningSegments(Number(obj.widthM), props.openingWidthM, props.openingPosition, props.openingOffsetM);
+  const scaleX = b.w / Number(obj.widthM || 1);
+  const openX = b.x + seg.openingStartM * scaleX;
+  const openW = props.openingWidthM * scaleX;
+  addWallSegmentSvg(g, b.x, b.y, seg.leftM * scaleX, b.h, theme);
+  addWallSegmentSvg(g, b.x + seg.rightStartM * scaleX, b.y, seg.rightM * scaleX, b.h, theme);
+  g.append(el("rect", { x: openX, y: b.y, width: openW, height: b.h, fill: theme.accent || "#dbeafe", stroke: theme.stroke, "stroke-width": .035 }));
+  g.append(el("line", { x1: openX, y1: b.cy, x2: openX + openW, y2: b.cy, stroke: "#60a5fa", "stroke-width": .035 }));
+}
+
+function drawDoorSvg(g, obj, b, theme) {
+  const props = normalizeDoorProperties(obj.properties || {}, obj.widthM);
+  const seg = getOpeningSegments(Number(obj.widthM), props.doorWidthM, props.doorPosition, props.openingOffsetM);
+  const scaleX = b.w / Number(obj.widthM || 1);
+  const openX = b.x + seg.openingStartM * scaleX;
+  const openW = props.doorWidthM * scaleX;
+  addWallSegmentSvg(g, b.x, b.y, seg.leftM * scaleX, b.h, theme);
+  addWallSegmentSvg(g, b.x + seg.rightStartM * scaleX, b.y, seg.rightM * scaleX, b.h, theme);
+
+  const hingeX = props.hingeSide === "left" ? openX : openX + openW;
+  const hingeY = b.cy;
+  const side = props.swingDirection === "in" ? 1 : -1;
+  const angle = props.openAngle * Math.PI / 180;
+  const theta = props.hingeSide === "left" ? side * angle : Math.PI - side * angle;
+  const endX = hingeX + Math.cos(theta) * openW;
+  const endY = hingeY + Math.sin(theta) * openW;
+  const closedX = hingeX + (props.hingeSide === "left" ? openW : -openW);
+  const sweep = props.hingeSide === "left" ? (side > 0 ? 1 : 0) : (side > 0 ? 0 : 1);
+  g.append(el("line", { x1: hingeX, y1: hingeY, x2: endX, y2: endY, stroke: theme.stroke, "stroke-width": .045 }));
+  g.append(el("path", { d: `M ${closedX} ${hingeY} A ${openW} ${openW} 0 0 ${sweep} ${endX} ${endY}`, fill: "none", stroke: theme.stroke, "stroke-width": .03 }));
+  g.append(el("circle", { cx: hingeX, cy: hingeY, r: Math.max(.035, b.h * .18), fill: theme.stroke }));
 }
 
 function variantFrame(type, b) {
@@ -809,6 +1190,7 @@ function colorFor(type) {
 function addObject(type) {
   if (hiddenObjectTypes.has(type)) return;
   if (!activeRange) return setStatus("Bitte zuerst einen Schiesskeller wählen", true);
+  pushUndoState();
   const def = objectTypes[type];
   const obj = {
     id: crypto.randomUUID(),
@@ -819,6 +1201,7 @@ function addObject(type) {
     heightM: def.heightM,
     rotation: 0,
     label: "",
+    locked: false,
     properties: {}
   };
   if (["target", "swinger", "mover"].includes(type)) {
@@ -828,12 +1211,16 @@ function addObject(type) {
       customTargetVariant: "",
       targetNote: ""
     };
+  } else if (structureTypes.has(type)) {
+    obj.properties = defaultStructureProperties(type);
   }
   applyCenterBounds(obj);
   currentStage.objects.push(obj);
   if (type === "target") applyTargetNumbering(false);
   selectedObjectId = obj.id;
+  selectedObjectIds = new Set([obj.id]);
   renderAmmoFields();
+  renderStageLightSettings();
   calculateDifficulty();
   if (currentStage.setupListAuto) recalculateSetupList(true);
   renderStage();
@@ -843,10 +1230,38 @@ function addObject(type) {
 
 function startDrag(event, id) {
   event.preventDefault();
+  const clicked = currentStage.objects.find(o => o.id === id);
+  if (!clicked) return;
+  if (event.shiftKey || event.metaKey) {
+    if (selectedObjectIds.has(id)) {
+      selectedObjectIds.delete(id);
+      if (selectedObjectId === id) selectedObjectId = [...selectedObjectIds][0] || null;
+    } else {
+      selectedObjectIds.add(id);
+      selectedObjectId = id;
+    }
+    activateTab("object");
+    renderStage();
+    renderObjectForm();
+    return;
+  }
+  if (!selectedObjectIds.has(id)) selectedObjectIds = new Set([id]);
   selectedObjectId = id;
   const obj = selectedObject();
+  if (!obj || obj.locked) {
+    activateTab("object");
+    renderStage();
+    renderObjectForm();
+    return;
+  }
   const p = svgPoint(event);
-  dragState = { id, dx: p.x - obj.xM, dy: p.y - obj.yM };
+  const selected = selectedObjects().filter(item => !item.locked);
+  dragState = {
+    id,
+    startPoint: p,
+    before: captureEditorState(),
+    objects: selected.map(item => ({ id: item.id, xM: item.xM, yM: item.yM }))
+  };
   activateTab("object");
   renderStage();
   renderObjectForm();
@@ -855,17 +1270,31 @@ function startDrag(event, id) {
 
 function onPointerMove(event) {
   if (!dragState || !activeRange) return;
-  const obj = selectedObject();
   const p = svgPoint(event);
-  obj.xM = round2(p.x - dragState.dx);
-  obj.yM = round2(p.y - dragState.dy);
-  applyCenterBounds(obj);
+  const rawDx = p.x - dragState.startPoint.x;
+  const rawDy = p.y - dragState.startPoint.y;
+  const snapped = snappedDelta(dragState.objects, rawDx, rawDy);
+  dragState.objects.forEach(start => {
+    const obj = currentStage.objects.find(item => item.id === start.id);
+    if (!obj || obj.locked) return;
+    obj.xM = round2(start.xM + snapped.dx);
+    obj.yM = round2(start.yM + snapped.dy);
+    applyCenterBounds(obj);
+  });
   renderStage();
   renderObjectForm();
   markDirty();
 }
 
-function endDrag() { dragState = null; }
+function endDrag() {
+  if (!dragState) return;
+  const before = dragState.before;
+  dragState = null;
+  alignmentGuides = [];
+  const after = captureEditorState();
+  if (!statesEqual(before, after)) pushUndoState(before);
+  renderStage();
+}
 
 function svgPoint(event) {
   const svg = $("stageSvg");
@@ -875,8 +1304,82 @@ function svgPoint(event) {
   return pt.matrixTransform(svg.getScreenCTM().inverse());
 }
 
+function snapValue(value, candidates) {
+  let best = { value, matched: null, distance: SNAP_THRESHOLD_M };
+  candidates.forEach(candidate => {
+    const distance = Math.abs(value - candidate);
+    if (distance <= best.distance) best = { value: candidate, matched: candidate, distance };
+  });
+  return best;
+}
+
+function objectSnapPoints(obj, dx = 0, dy = 0) {
+  const x = Number(obj.xM || 0) + dx;
+  const y = Number(obj.yM || 0) + dy;
+  const w = Number(obj.widthM || 0);
+  const h = Number(obj.heightM || 0);
+  return {
+    x: [x, x + w / 2, x + w],
+    y: [y, y + h / 2, y + h]
+  };
+}
+
+function gridCandidates(max) {
+  const step = Math.max(.1, Number(activeRange.gridM || 1));
+  const values = [];
+  for (let value = 0; value <= max + .001; value += step) values.push(round2(value));
+  return values;
+}
+
+function snappedDelta(starts, dx, dy) {
+  alignmentGuides = [];
+  if (!snapEnabled || !activeRange || !starts.length) return { dx, dy };
+  const movingIds = new Set(starts.map(item => item.id));
+  const staticObjects = (currentStage.objects || []).filter(obj => !movingIds.has(obj.id));
+  const candidatesX = gridCandidates(activeRange.widthM);
+  const candidatesY = gridCandidates(activeRange.heightM);
+  staticObjects.forEach(obj => {
+    const points = objectSnapPoints(obj);
+    candidatesX.push(...points.x);
+    candidatesY.push(...points.y);
+  });
+
+  let bestX = { distance: SNAP_THRESHOLD_M, delta: dx, guide: null };
+  let bestY = { distance: SNAP_THRESHOLD_M, delta: dy, guide: null };
+  starts.forEach(start => {
+    const obj = currentStage.objects.find(item => item.id === start.id);
+    if (!obj) return;
+    const ghost = { ...obj, xM: start.xM, yM: start.yM };
+    const points = objectSnapPoints(ghost, dx, dy);
+    points.x.forEach(point => {
+      const snap = snapValue(point, candidatesX);
+      if (snap.matched !== null && snap.distance <= bestX.distance) {
+        bestX = { distance: snap.distance, delta: dx + snap.matched - point, guide: snap.matched };
+      }
+    });
+    points.y.forEach(point => {
+      const snap = snapValue(point, candidatesY);
+      if (snap.matched !== null && snap.distance <= bestY.distance) {
+        bestY = { distance: snap.distance, delta: dy + snap.matched - point, guide: snap.matched };
+      }
+    });
+  });
+  if (bestX.guide !== null) alignmentGuides.push({ axis: "x", value: bestX.guide });
+  if (bestY.guide !== null) alignmentGuides.push({ axis: "y", value: bestY.guide });
+  return { dx: bestX.delta, dy: bestY.delta };
+}
+
 function selectedObject() {
   return currentStage.objects.find(o => o.id === selectedObjectId);
+}
+
+function selectedObjects() {
+  return (currentStage.objects || []).filter(o => selectedObjectIds.has(o.id));
+}
+
+function ensureSelection(id) {
+  selectedObjectId = id || null;
+  selectedObjectIds = id ? new Set([id]) : new Set();
 }
 
 function renderObjectForm() {
@@ -887,6 +1390,9 @@ function renderObjectForm() {
     return;
   }
   const hasTargetVariant = ["target", "swinger", "mover"].includes(obj.type);
+  const isStructure = structureTypes.has(obj.type);
+  const isWindow = obj.type === "window";
+  const isDoor = obj.type === "door";
   const typeOptions = Object.entries(objectTypes)
     .filter(([k]) => !hiddenObjectTypes.has(k) || k === obj.type)
     .map(([k, v]) => `<option value="${k}">${v.label}</option>`)
@@ -900,16 +1406,56 @@ function renderObjectForm() {
       <button id="objDuplicate" type="button">Duplizieren</button>
       <button id="objDelete" type="button">Löschen</button>
     </div>
+    <label class="check-row"><input id="objLocked" type="checkbox"> Objekt sperren</label>
     <label>Typ<select id="objType">${typeOptions}</select></label>
     <div class="muted">X/Y beziehen sich auf die Objektmitte</div>
     <div class="grid2">
       <label>X Position Mitte m<input id="objX" type="number" step="0.1"></label>
       <label>Y Position Mitte m<input id="objY" type="number" step="0.1"></label>
-      <label>Breite m<input id="objW" type="number" step="0.1" min="0.1"></label>
-      <label>Höhe/Tiefe m<input id="objH" type="number" step="0.1" min="0.1"></label>
+      <label>${isStructure ? "Länge m" : "Breite m"}<input id="objW" type="number" step="0.1" min="0.02"></label>
+      <label>${isStructure ? "Dicke m" : "Höhe/Tiefe m"}<input id="objH" type="number" step="0.01" min="0.02"></label>
       <label>Rotation °<input id="objRot" type="number" step="5"></label>
       <label>Label<input id="objLabel"></label>
     </div>
+    ${isWindow ? `
+    <section class="object-subpanel">
+      <h3>Fenster</h3>
+      <label>Fensterbreite m<input id="objOpeningWidth" type="number" min="0.1" step="0.1"></label>
+      <label>Fensterposition<select id="objOpeningPosition">
+        <option value="center">Mitte</option>
+        <option value="left">Links</option>
+        <option value="right">Rechts</option>
+        <option value="free">Frei</option>
+      </select></label>
+      <label id="objOpeningOffsetWrap">Öffnung Abstand von links m<input id="objOpeningOffset" type="number" min="0" step="0.1"></label>
+    </section>
+    ` : ""}
+    ${isDoor ? `
+    <section class="object-subpanel">
+      <h3>Tür</h3>
+      <label>Türbreite m<input id="objDoorWidth" type="number" min="0.1" step="0.1"></label>
+      <label>Türposition<select id="objDoorPosition">
+        <option value="center">Mitte</option>
+        <option value="left">Links</option>
+        <option value="right">Rechts</option>
+        <option value="free">Frei</option>
+      </select></label>
+      <label id="objDoorOffsetWrap">Öffnung Abstand von links m<input id="objDoorOffset" type="number" min="0" step="0.1"></label>
+      <label>Türseite / Anschlag<select id="objHingeSide">
+        <option value="left">links angeschlagen</option>
+        <option value="right">rechts angeschlagen</option>
+      </select></label>
+      <label>Öffnungsrichtung<select id="objSwingDirection">
+        <option value="in">nach innen</option>
+        <option value="out">nach aussen</option>
+      </select></label>
+      <label>Öffnungswinkel<select id="objOpenAngle">
+        <option value="45">45°</option>
+        <option value="90">90°</option>
+        <option value="120">120°</option>
+      </select></label>
+    </section>
+    ` : ""}
     ${hasTargetVariant ? `
     <label>Scheibenvariante<select id="objTargetVariant">
       ${targetVariants.map(v => `<option value="${v.value}">${v.label}</option>`).join("")}
@@ -919,10 +1465,37 @@ function renderObjectForm() {
     </select></label>
     <label id="objTargetVariantCustomWrap">Custom Variant Text<input id="objTargetVariantCustom"></label>
     <label>Zielnotiz<textarea id="objTargetNote" rows="2"></textarea></label>
-    ` : ""}`;
+    ` : ""}
+    ${obj.type === "light" ? `<div class="object-subpanel muted">Licht-Einstellungen gelten für alle Lichter dieser Stage.</div>` : ""}`;
   const center = objectCenterM(obj);
   $("objType").value = obj.type; $("objX").value = round2(center.x); $("objY").value = round2(center.y);
   $("objW").value = obj.widthM; $("objH").value = obj.heightM; $("objRot").value = obj.rotation; $("objLabel").value = obj.label || "";
+  $("objLocked").checked = !!obj.locked;
+  if (isWindow) {
+    const win = normalizeWindowProperties(props, obj.widthM);
+    $("objOpeningWidth").value = win.openingWidthM;
+    $("objOpeningPosition").value = win.openingPosition;
+    $("objOpeningOffset").value = win.openingOffsetM || 0;
+    $("objOpeningOffsetWrap").hidden = win.openingPosition !== "free";
+    $("objOpeningPosition").addEventListener("input", () => {
+      $("objOpeningOffsetWrap").hidden = $("objOpeningPosition").value !== "free";
+      readObjectForm();
+    });
+  }
+  if (isDoor) {
+    const door = normalizeDoorProperties(props, obj.widthM);
+    $("objDoorWidth").value = door.doorWidthM;
+    $("objDoorPosition").value = door.doorPosition;
+    $("objDoorOffset").value = door.openingOffsetM || 0;
+    $("objDoorOffsetWrap").hidden = door.doorPosition !== "free";
+    $("objHingeSide").value = door.hingeSide;
+    $("objSwingDirection").value = door.swingDirection;
+    $("objOpenAngle").value = String(door.openAngle);
+    $("objDoorPosition").addEventListener("input", () => {
+      $("objDoorOffsetWrap").hidden = $("objDoorPosition").value !== "free";
+      readObjectForm();
+    });
+  }
   if (hasTargetVariant) {
     $("objTargetVariant").value = props.targetVariant || "full";
     $("objVariantDirection").value = props.variantDirection || "right";
@@ -940,18 +1513,43 @@ function renderObjectForm() {
   $("objRotateRight").addEventListener("click", () => rotateSelectedObject(15));
   $("objDuplicate").addEventListener("click", duplicateSelectedObject);
   $("objDelete").addEventListener("click", deleteSelectedObject);
-  ["objType", "objX", "objY", "objW", "objH", "objRot", "objLabel"].forEach(id => $(id).addEventListener("input", readObjectForm));
+  $("objLocked").addEventListener("change", readObjectForm);
+  ["objType", "objX", "objY", "objW", "objH", "objRot", "objLabel"].forEach(id => {
+    $(id).addEventListener("focus", beginObjectFormEdit);
+    $(id).addEventListener("input", readObjectForm);
+  });
   if (hasTargetVariant) ["objVariantDirection", "objTargetVariantCustom", "objTargetNote"].forEach(id => $(id).addEventListener("input", readObjectForm));
+  if (isWindow) ["objOpeningWidth", "objOpeningOffset"].forEach(id => $(id).addEventListener("input", readObjectForm));
+  if (isDoor) ["objDoorWidth", "objDoorOffset", "objHingeSide", "objSwingDirection", "objOpenAngle"].forEach(id => $(id).addEventListener("input", readObjectForm));
   updateObjectActionBar();
+}
+
+function beginObjectFormEdit() {
+  if (!pendingObjectFormSnapshot) pendingObjectFormSnapshot = captureEditorState();
+}
+
+function scheduleObjectFormHistoryCommit() {
+  if (objectFormHistoryTimer) clearTimeout(objectFormHistoryTimer);
+  objectFormHistoryTimer = setTimeout(commitObjectFormHistory, 450);
+}
+
+function commitObjectFormHistory() {
+  if (!pendingObjectFormSnapshot) return;
+  const before = pendingObjectFormSnapshot;
+  pendingObjectFormSnapshot = null;
+  objectFormHistoryTimer = null;
+  if (!statesEqual(before, captureEditorState())) pushUndoState(before);
 }
 
 function readObjectForm() {
   const obj = selectedObject();
   if (!obj) return;
+  if (!pendingObjectFormSnapshot) pendingObjectFormSnapshot = captureEditorState();
   obj.type = $("objType").value;
   obj.properties = obj.properties || {};
-  obj.widthM = Math.max(.1, Number($("objW").value || .1));
-  obj.heightM = Math.max(.1, Number($("objH").value || .1));
+  obj.locked = $("objLocked").checked;
+  obj.widthM = Math.max(.02, Number($("objW").value || .02));
+  obj.heightM = Math.max(.02, Number($("objH").value || .02));
   const centerX = Number($("objX").value || 0);
   const centerY = Number($("objY").value || 0);
   obj.xM = centerX - obj.widthM / 2;
@@ -964,10 +1562,28 @@ function readObjectForm() {
     obj.properties.variantDirection = $("objVariantDirection") ? $("objVariantDirection").value : (obj.properties.variantDirection || "right");
     obj.properties.customTargetVariant = $("objTargetVariantCustom") ? $("objTargetVariantCustom").value : (obj.properties.customTargetVariant || "");
     obj.properties.targetNote = $("objTargetNote") ? $("objTargetNote").value : (obj.properties.targetNote || "");
+  } else if (obj.type === "window") {
+    obj.properties = normalizeWindowProperties({
+      openingWidthM: $("objOpeningWidth") ? $("objOpeningWidth").value : obj.properties.openingWidthM,
+      openingPosition: $("objOpeningPosition") ? $("objOpeningPosition").value : obj.properties.openingPosition,
+      openingOffsetM: $("objOpeningOffset") ? $("objOpeningOffset").value : obj.properties.openingOffsetM
+    }, obj.widthM);
+    if ($("objOpeningOffsetWrap")) $("objOpeningOffsetWrap").hidden = obj.properties.openingPosition !== "free";
+  } else if (obj.type === "door") {
+    obj.properties = normalizeDoorProperties({
+      doorWidthM: $("objDoorWidth") ? $("objDoorWidth").value : obj.properties.doorWidthM,
+      doorPosition: $("objDoorPosition") ? $("objDoorPosition").value : obj.properties.doorPosition,
+      openingOffsetM: $("objDoorOffset") ? $("objDoorOffset").value : obj.properties.openingOffsetM,
+      hingeSide: $("objHingeSide") ? $("objHingeSide").value : obj.properties.hingeSide,
+      swingDirection: $("objSwingDirection") ? $("objSwingDirection").value : obj.properties.swingDirection,
+      openAngle: $("objOpenAngle") ? $("objOpenAngle").value : obj.properties.openAngle
+    }, obj.widthM);
+    if ($("objDoorOffsetWrap")) $("objDoorOffsetWrap").hidden = obj.properties.doorPosition !== "free";
   }
   if (currentStage.setupListAuto) recalculateSetupList(true);
   renderStage();
   markDirty();
+  scheduleObjectFormHistoryCommit();
 }
 
 function objectCenterM(obj) {
@@ -988,10 +1604,13 @@ function applyCenterBounds(obj) {
 }
 
 function deleteSelectedObject() {
-  if (!selectedObjectId) return;
-  currentStage.objects = currentStage.objects.filter(o => o.id !== selectedObjectId);
-  selectedObjectId = null;
+  const ids = new Set(selectedObjects().filter(obj => !obj.locked).map(obj => obj.id));
+  if (!ids.size) return;
+  pushUndoState();
+  currentStage.objects = currentStage.objects.filter(o => !ids.has(o.id));
+  ensureSelection(null);
   renderAmmoFields();
+  renderStageLightSettings();
   calculateDifficulty();
   applyTargetNumbering(false);
   if (currentStage.setupListAuto) recalculateSetupList(true);
@@ -1003,25 +1622,34 @@ function deleteSelectedObject() {
 }
 
 function rotateSelectedObject(delta) {
-  const obj = selectedObject();
-  if (!obj) return;
-  obj.rotation = normalizeRotation((Number(obj.rotation) || 0) + delta);
+  const objects = selectedObjects().filter(obj => !obj.locked);
+  if (!objects.length) return;
+  pushUndoState();
+  objects.forEach(obj => {
+    obj.rotation = normalizeRotation((Number(obj.rotation) || 0) + delta);
+  });
   renderStage();
   renderObjectForm();
   markDirty();
 }
 
 function duplicateSelectedObject() {
-  const obj = selectedObject();
-  if (!obj || !activeRange) return;
-  const copy = JSON.parse(JSON.stringify(obj));
-  copy.id = crypto.randomUUID();
-  copy.xM = round2(copy.xM + .5);
-  copy.yM = round2(copy.yM + .5);
-  applyCenterBounds(copy);
-  currentStage.objects.push(copy);
-  if (copy.type === "target") applyTargetNumbering(false);
-  selectedObjectId = copy.id;
+  const objects = selectedObjects().filter(obj => !obj.locked);
+  if (!objects.length || !activeRange) return;
+  pushUndoState();
+  const copies = objects.map(obj => {
+    const copy = JSON.parse(JSON.stringify(obj));
+    copy.id = crypto.randomUUID();
+    copy.locked = false;
+    copy.xM = round2(copy.xM + .5);
+    copy.yM = round2(copy.yM + .5);
+    applyCenterBounds(copy);
+    return copy;
+  });
+  currentStage.objects.push(...copies);
+  if (copies.some(copy => copy.type === "target")) applyTargetNumbering(false);
+  selectedObjectId = copies[copies.length - 1].id;
+  selectedObjectIds = new Set(copies.map(copy => copy.id));
   renderAmmoFields();
   calculateDifficulty();
   if (currentStage.setupListAuto) recalculateSetupList(true);
@@ -1036,14 +1664,25 @@ function duplicateSelectedObject() {
 function handleShortcuts(event) {
   const tag = (event.target && event.target.tagName || "").toLowerCase();
   const editingText = ["input", "textarea", "select"].includes(tag);
-  if (editingText && !(event.ctrlKey && event.key.toLowerCase() === "d")) return;
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && key === "z") {
+    event.preventDefault();
+    if (event.shiftKey) redoEditor(); else undoEditor();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && key === "y") {
+    event.preventDefault();
+    redoEditor();
+    return;
+  }
+  if (editingText && !((event.ctrlKey || event.metaKey) && key === "d")) return;
   if (event.key.toLowerCase() === "q") {
     event.preventDefault();
     rotateSelectedObject(-15);
   } else if (event.key.toLowerCase() === "e") {
     event.preventDefault();
     rotateSelectedObject(15);
-  } else if (event.ctrlKey && event.key.toLowerCase() === "d") {
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") {
     event.preventDefault();
     duplicateSelectedObject();
   } else if (event.key === "Delete") {
@@ -1101,7 +1740,9 @@ function resizeMags(kind, count) {
 async function newStage() {
   currentStage = blankStage((activeRange && activeRange.id) || (ranges[0] && ranges[0].id) || null);
   currentStage.version = "v1.0";
-  selectedObjectId = null;
+  ensureSelection(null);
+  resetEditorHistory();
+  clearSavedStageReference();
   syncStageToForm();
   renderStage();
   updateObjectActionBar();
@@ -1131,6 +1772,7 @@ async function saveSettings() {
 async function saveStage() {
   try {
     setSaveState("saving", "Wird gespeichert...");
+    commitObjectFormHistory();
     readStageFromForm();
     const method = currentStage.id ? "PUT" : "POST";
     const url = currentStage.id ? `/api/stages/${currentStage.id}` : "/api/stages";
@@ -1139,6 +1781,7 @@ async function saveStage() {
     syncStageToForm();
     renderStage();
     stageDirty = false;
+    rememberSavedStageReference();
     setSaveState("saved", "Gespeichert");
     setStatus("Stage gespeichert");
   } catch (error) {
@@ -1148,30 +1791,64 @@ async function saveStage() {
 
 async function openLoadDialog() {
   await loadStages();
-  $("stageList").innerHTML = stages.map(s => `<button type="button" data-id="${s.id}">${escapeHtml(s.name)} · ${escapeHtml(labelWeapon(s.weaponType))}</button>`).join("") || "<div class='muted'>Keine Stages gespeichert</div>";
+  renderStageFilterOptions();
+  renderStageLoadList();
+  $("loadDialog").showModal();
+}
+
+function renderStageFilterOptions() {
+  const rangeOptions = ranges.map(r => `<option value="${r.id}">${escapeHtml(r.name)}</option>`).join("");
+  $("stageFilterRange").innerHTML = `<option value="">Alle Schiesskeller</option>${rangeOptions}`;
+  $("stageFilterFocus").innerHTML = `<option value="">Alle Schwerpunkte</option>${focusAreas.map(item => `<option>${escapeHtml(item)}</option>`).join("")}`;
+}
+
+function renderStageLoadList() {
+  const query = ($("stageSearch").value || "").trim().toLowerCase();
+  const rangeId = $("stageFilterRange").value;
+  const weapon = $("stageFilterWeapon").value;
+  const difficulty = $("stageFilterDifficulty").value;
+  const focus = $("stageFilterFocus").value;
+  const filtered = stages.filter(stage => {
+    const haystack = [stage.name, stage.description, stage.trainingGoal, stage.procedure].join(" ").toLowerCase();
+    if (query && !haystack.includes(query)) return false;
+    if (rangeId && String(stage.rangeId) !== rangeId) return false;
+    if (weapon && stage.weaponType !== weapon) return false;
+    if (difficulty && stage.difficultyCalculated !== difficulty) return false;
+    if (focus && !(stage.focusAreas || []).includes(focus)) return false;
+    return true;
+  });
+  $("stageList").innerHTML = filtered.map(s => {
+    const range = ranges.find(r => r.id === s.rangeId);
+    const meta = [range && range.name, labelWeapon(s.weaponType), s.difficultyCalculated].filter(Boolean).join(" · ");
+    return `<button type="button" data-id="${s.id}"><b>${escapeHtml(s.name)}</b><br><small>${escapeHtml(meta)}</small></button>`;
+  }).join("") || "<div class='empty-list'>Keine passenden Stages gefunden</div>";
   $("stageList").querySelectorAll("button").forEach(btn => btn.addEventListener("click", async () => {
     const payload = await api(`/api/stages/${btn.dataset.id}`);
     currentStage = payload.stage;
     activeRange = payload.range;
-    selectedObjectId = null;
+    ensureSelection(null);
+    resetEditorHistory();
     renderRangeSelect();
     syncStageToForm();
     renderStage();
     updateObjectActionBar();
     $("loadDialog").close();
     stageDirty = false;
+    rememberSavedStageReference();
     setSaveState("saved", "Gespeichert");
     setStatus("Stage geladen");
   }));
-  $("loadDialog").showModal();
 }
 
 async function duplicateStage() {
   if (!currentStage.id) return setStatus("Stage zuerst speichern", true);
   currentStage = await api(`/api/stages/${currentStage.id}/duplicate`, { method: "POST" });
   await loadStages();
+  ensureSelection(null);
+  resetEditorHistory();
   syncStageToForm();
   stageDirty = false;
+  rememberSavedStageReference();
   setSaveState("saved", "Gespeichert");
   setStatus("Stage dupliziert");
 }
@@ -1188,13 +1865,16 @@ async function deleteStage() {
       activeRange = payload.range;
     } else {
       currentStage = blankStage((activeRange && activeRange.id) || (ranges[0] && ranges[0].id) || null);
-      selectedObjectId = null;
     }
+    ensureSelection(null);
+    resetEditorHistory();
+    rememberSavedStageReference();
     renderRangeSelect();
     syncStageToForm();
     renderStage();
     updateObjectActionBar();
     stageDirty = false;
+    rememberSavedStageReference();
     setSaveState("saved", "Gespeichert");
     setStatus("Stage gelöscht");
   } catch (error) {
@@ -1220,6 +1900,9 @@ async function importJson(event) {
     currentStage = await api("/api/import", { method: "POST", body: JSON.stringify(payload) });
     await loadRanges();
     activeRange = ranges.find(r => r.id === currentStage.rangeId) || ranges[0];
+    ensureSelection(null);
+    resetEditorHistory();
+    rememberSavedStageReference();
     renderRangeSelect();
     syncStageToForm();
     renderStage();
@@ -1342,6 +2025,8 @@ async function deleteRange() {
   activeRange = ranges[0] || null;
   editingRange = activeRange || blankRange();
   currentStage = blankStage((activeRange && activeRange.id) || null);
+  ensureSelection(null);
+  resetEditorHistory();
   renderRangeList();
   renderRangeSelect();
   syncRangeToForm();
@@ -1361,6 +2046,7 @@ function el(name, attrs = {}, text = null) {
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function round2(value) { return Math.round(value * 100) / 100; }
+function round1(value) { return Math.round(value * 10) / 10; }
 function escapeHtml(value) {
   return String(value == null ? "" : value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
 }

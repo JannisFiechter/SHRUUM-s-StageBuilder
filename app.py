@@ -46,6 +46,36 @@ SIDES = {"top", "right", "bottom", "left"}
 DIFFICULTIES = ("Leicht", "Mittel", "Schwer")
 LEGACY_AUTHOR_SETTING = "co" + "achName"
 LEGACY_FOOTER_SETTING = "footerText"
+LIGHT_MODES = {"color", "false-color", "delay", "timeout"}
+LIGHT_COLORS = {"#FF2A2A", "#42C96A", "#3A84F7", "#D9C900", "#C24AF5", "#25CFF5"}
+LIGHT_COLOR_LABELS = {
+    "#FF2A2A": "Rot",
+    "#42C96A": "Grün",
+    "#3A84F7": "Blau",
+    "#D9C900": "Gelb",
+    "#C24AF5": "Violett",
+    "#25CFF5": "Cyan",
+}
+LIGHT_MODE_LABELS = {
+    "color": "Color",
+    "false-color": "False Color",
+    "delay": "Delay",
+    "timeout": "Timeout",
+}
+LIGHT_TIMER_LABELS = {
+    "infinite": "∞",
+    "10": "10 s",
+    "15": "15 s",
+    "30": "30 s",
+    "45": "45 s",
+    "60": "1 min",
+    "120": "2 min",
+    "180": "3 min",
+    "300": "5 min",
+    "600": "10 min",
+}
+LIGHT_TIMER_VALUES = {"infinite", "10", "15", "30", "45", "60", "120", "180", "300", "600"}
+STRUCTURE_TYPES = {"wall", "window", "door"}
 
 
 app = Flask(__name__)
@@ -213,6 +243,7 @@ def init_db() -> None:
                 target_numbering TEXT NOT NULL DEFAULT '{}',
                 setup_list_auto INTEGER NOT NULL DEFAULT 1,
                 setup_list_text TEXT NOT NULL DEFAULT '',
+                light_settings TEXT NOT NULL DEFAULT '{}',
                 ammo TEXT NOT NULL DEFAULT '{}',
                 mag_prep TEXT NOT NULL DEFAULT '{}',
                 objects TEXT NOT NULL DEFAULT '[]',
@@ -238,6 +269,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE stages ADD COLUMN setup_list_auto INTEGER NOT NULL DEFAULT 1")
         if "setup_list_text" not in columns:
             conn.execute("ALTER TABLE stages ADD COLUMN setup_list_text TEXT NOT NULL DEFAULT ''")
+        if "light_settings" not in columns:
+            conn.execute("ALTER TABLE stages ADD COLUMN light_settings TEXT NOT NULL DEFAULT '{}'")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS app_settings (
@@ -350,6 +383,7 @@ def stage_snapshot(stage: dict) -> dict:
         "targetNumbering": stage.get("targetNumbering") or default_target_numbering(),
         "setupListAuto": bool(stage.get("setupListAuto", True)),
         "setupListText": stage.get("setupListText") or "",
+        "lightSettings": stage.get("lightSettings") or normalize_light_properties({}),
         "ammo": stage.get("ammo") or {},
         "magPrep": stage.get("magPrep") or {},
         "objects": sorted(stage.get("objects") or [], key=lambda obj: obj.get("id", "")),
@@ -478,6 +512,107 @@ def normalize_mag_prep(mag_prep: dict | None) -> dict:
     }
 
 
+def normalize_light_properties(properties: dict) -> dict:
+    color = str(properties.get("color") or "#FF2A2A").upper()
+    mode = str(properties.get("mode") or "color")
+    limit_type = str(properties.get("limitType") or "timer")
+    timer_value = str(properties.get("timerValue") or "infinite")
+    try:
+        probability = round(float(properties.get("probability", 100)) / 10) * 10
+    except (TypeError, ValueError):
+        probability = 100
+    try:
+        delay_seconds = round(max(0.0, float(properties.get("delaySeconds") or 0)), 1)
+    except (TypeError, ValueError):
+        delay_seconds = 0.0
+    try:
+        timeout_seconds = round(max(0.0, float(properties.get("timeoutSeconds") or 0)), 1)
+    except (TypeError, ValueError):
+        timeout_seconds = 0.0
+    try:
+        counts = max(1, int(properties.get("counts") or 1))
+    except (TypeError, ValueError):
+        counts = 1
+    return {
+        "mode": mode if mode in LIGHT_MODES else "color",
+        "color": color if color in LIGHT_COLORS else "#FF2A2A",
+        "delaySeconds": delay_seconds,
+        "timeoutSeconds": timeout_seconds,
+        "limitType": limit_type if limit_type in {"timer", "counts"} else "timer",
+        "timerValue": timer_value if timer_value in LIGHT_TIMER_VALUES else "infinite",
+        "counts": counts,
+        "sensorMode": bool(properties.get("sensorMode")),
+        "probability": int(max(0, min(100, probability))),
+    }
+
+
+def normalize_opening_width(value, length_m: float, fallback: float) -> float:
+    try:
+        width = float(value)
+    except (TypeError, ValueError):
+        width = fallback
+    return max(0.1, min(width, max(0.1, length_m)))
+
+
+def normalize_opening_offset(value, opening_width_m: float, length_m: float) -> float:
+    max_offset = max(0.0, length_m - opening_width_m)
+    try:
+        offset = float(value)
+    except (TypeError, ValueError):
+        offset = 0.0
+    return round(max(0.0, min(offset, max_offset)), 2)
+
+
+def normalize_window_properties(properties: dict, length_m: float) -> dict:
+    opening_width = normalize_opening_width(properties.get("openingWidthM"), length_m, 1.0)
+    position = properties.get("openingPosition") if properties.get("openingPosition") in {"center", "left", "right", "free"} else "center"
+    return {
+        "openingWidthM": opening_width,
+        "openingPosition": position,
+        "openingOffsetM": normalize_opening_offset(properties.get("openingOffsetM"), opening_width, length_m) if position == "free" else None,
+    }
+
+
+def normalize_door_properties(properties: dict, length_m: float) -> dict:
+    door_width = normalize_opening_width(properties.get("doorWidthM"), length_m, 0.9)
+    position = properties.get("doorPosition") if properties.get("doorPosition") in {"center", "left", "right", "free"} else "center"
+    try:
+        angle = int(properties.get("openAngle") or 90)
+    except (TypeError, ValueError):
+        angle = 90
+    return {
+        "doorWidthM": door_width,
+        "doorPosition": position,
+        "openingOffsetM": normalize_opening_offset(properties.get("openingOffsetM"), door_width, length_m) if position == "free" else None,
+        "hingeSide": "right" if properties.get("hingeSide") == "right" else "left",
+        "swingDirection": "out" if properties.get("swingDirection") == "out" else "in",
+        "openAngle": angle if angle in {45, 90, 120} else 90,
+    }
+
+
+def opening_start(length_m: float, opening_width_m: float, position: str, offset_m) -> float:
+    max_start = max(0.0, length_m - opening_width_m)
+    if position == "left":
+        return 0.0
+    if position == "right":
+        return max_start
+    if position == "free":
+        return normalize_opening_offset(offset_m, opening_width_m, length_m)
+    return round(max_start / 2, 2)
+
+
+def get_opening_segments(length_m: float, opening_width_m: float, position: str, offset_m) -> dict:
+    start = opening_start(length_m, opening_width_m, position, offset_m)
+    end = start + opening_width_m
+    return {
+        "openingStartM": start,
+        "openingEndM": end,
+        "leftM": max(0.0, start),
+        "rightStartM": min(length_m, end),
+        "rightM": max(0.0, length_m - end),
+    }
+
+
 def normalize_objects(objects: list | None) -> list[dict]:
     clean = []
     for obj in objects or []:
@@ -486,6 +621,9 @@ def normalize_objects(objects: list | None) -> list[dict]:
         if obj_type == "noShoot":
             obj_type = "target"
             properties = {**properties, "targetVariant": "no-shoot"}
+        if obj_type in {"barricade", "wallWindow"}:
+            obj_type = "window"
+        width_m = max(0.02, float(obj.get("widthM") or 1))
         if obj_type in {"target", "swinger", "mover"}:
             raw_variant = properties.get("targetVariant") or "full"
             variant = raw_variant
@@ -499,16 +637,25 @@ def normalize_objects(objects: list | None) -> list[dict]:
                 "customTargetVariant": str(properties.get("customTargetVariant") or ""),
                 "targetNote": str(properties.get("targetNote") or ""),
             }
+        elif obj_type == "light":
+            properties = normalize_light_properties(properties)
+        elif obj_type == "window":
+            properties = normalize_window_properties(properties, width_m)
+        elif obj_type == "door":
+            properties = normalize_door_properties(properties, width_m)
+        elif obj_type == "wall":
+            properties = {}
         clean.append(
             {
                 "id": obj.get("id") or uuid.uuid4().hex,
                 "type": obj_type,
                 "xM": float(obj.get("xM") or 0),
                 "yM": float(obj.get("yM") or 0),
-                "widthM": max(0.1, float(obj.get("widthM") or 1)),
-                "heightM": max(0.1, float(obj.get("heightM") or 1)),
+                "widthM": width_m,
+                "heightM": max(0.02, float(obj.get("heightM") or 1)),
                 "rotation": float(obj.get("rotation") or 0),
                 "label": str(obj.get("label") or ""),
+                "locked": bool(obj.get("locked", False)),
                 "properties": properties,
             }
         )
@@ -569,6 +716,11 @@ def row_to_stage(row: sqlite3.Row, range_data: dict | None = None) -> dict:
     ammo = normalize_ammo(json_loads(row["ammo"], {}), objects)
     target_numbering = default_target_numbering()
     target_numbering.update(json_loads(row["target_numbering"], {}) or {})
+    light_settings = normalize_light_properties(json_loads(row["light_settings"], {}) or {})
+    if row["light_settings"] in (None, "", "{}"):
+        first_light = next((obj for obj in objects if obj.get("type") == "light" and obj.get("properties")), None)
+        if first_light:
+            light_settings = normalize_light_properties(first_light.get("properties") or {})
     stage = {
         "id": row["id"],
         "rangeId": row["range_id"],
@@ -592,6 +744,7 @@ def row_to_stage(row: sqlite3.Row, range_data: dict | None = None) -> dict:
         "targetNumbering": target_numbering,
         "setupListAuto": bool(row["setup_list_auto"]),
         "setupListText": row["setup_list_text"] or "",
+        "lightSettings": light_settings,
         "contentHash": row["content_hash"],
         "ammo": ammo,
         "magPrep": normalize_mag_prep(json_loads(row["mag_prep"], {})),
@@ -949,6 +1102,10 @@ def api_save_settings():
 def normalize_stage_payload(raw: dict) -> dict:
     objects = normalize_objects(raw.get("objects"))
     numbering = raw.get("targetNumbering") if isinstance(raw.get("targetNumbering"), dict) else {}
+    raw_light_settings = raw.get("lightSettings") if isinstance(raw.get("lightSettings"), dict) else {}
+    if not raw_light_settings:
+        first_light = next((obj for obj in objects if obj.get("type") == "light" and obj.get("properties")), None)
+        raw_light_settings = (first_light or {}).get("properties") or {}
     stage = {
         "rangeId": int(raw.get("rangeId") or 0),
         "name": raw.get("name") or "Neue Stage",
@@ -974,6 +1131,7 @@ def normalize_stage_payload(raw: dict) -> dict:
         },
         "setupListAuto": bool(raw.get("setupListAuto", True)),
         "setupListText": str(raw.get("setupListText") or ""),
+        "lightSettings": normalize_light_properties(raw_light_settings),
         "ammo": normalize_ammo(raw.get("ammo"), objects),
         "magPrep": normalize_mag_prep(raw.get("magPrep")),
         "objects": objects,
@@ -988,8 +1146,8 @@ def stage_insert_sql() -> str:
         range_id, name, version, description, training_goal, procedure, safety_notes, training_type, weapon_type,
         start_position_handgun, start_position_longgun, focus_areas, difficulty_calculated, difficulty_manual,
         difficulty_override_enabled, difficulty_reasons, default_target_type, default_target_type_custom, target_numbering,
-        setup_list_auto, setup_list_text, ammo, mag_prep, objects, content_hash, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        setup_list_auto, setup_list_text, light_settings, ammo, mag_prep, objects, content_hash, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
 
@@ -998,7 +1156,7 @@ def stage_update_sql() -> str:
     UPDATE stages SET range_id=?, name=?, version=?, description=?, training_goal=?, procedure=?, safety_notes=?,
     training_type=?, weapon_type=?, start_position_handgun=?, start_position_longgun=?, focus_areas=?,
     difficulty_calculated=?, difficulty_manual=?, difficulty_override_enabled=?, difficulty_reasons=?, default_target_type=?,
-    default_target_type_custom=?, target_numbering=?, setup_list_auto=?, setup_list_text=?, ammo=?, mag_prep=?, objects=?, content_hash=?, updated_at=? WHERE id=?
+    default_target_type_custom=?, target_numbering=?, setup_list_auto=?, setup_list_text=?, light_settings=?, ammo=?, mag_prep=?, objects=?, content_hash=?, updated_at=? WHERE id=?
     """
 
 
@@ -1025,6 +1183,7 @@ def stage_values(data: dict, created_at: str, updated_at: str) -> tuple:
         json.dumps(data["targetNumbering"], ensure_ascii=False),
         1 if data["setupListAuto"] else 0,
         data["setupListText"],
+        json.dumps(data["lightSettings"], ensure_ascii=False),
         json.dumps(data["ammo"], ensure_ascii=False),
         json.dumps(data["magPrep"], ensure_ascii=False),
         json.dumps(data["objects"], ensure_ascii=False),
@@ -1156,6 +1315,9 @@ def build_pdf(stage: dict, range_data: dict, settings: dict | None = None) -> By
     content_blocks = [("Trainingsziel", stage["trainingGoal"])]
     if stage.get("setupListText"):
         content_blocks.append(("Setup / Material", stage["setupListText"]))
+    light_text = lights_text(stage)
+    if light_text:
+        content_blocks.append(("Lichter", light_text))
     content_blocks.extend([
         ("Kurzbeschreibung", stage["description"]),
         ("Sicherheitsnotizen", stage["safetyNotes"]),
@@ -1309,6 +1471,8 @@ def two_col_boxes(items, styles):
 
 OBJECT_LABELS = {
     "wall": "Wand",
+    "window": "Fenster",
+    "door": "Tür",
     "backstop": "mobiler Kugelfang",
     "target": "Scheibe",
     "target_no_shoot": "Scheibe (No-Shoot)",
@@ -1321,7 +1485,6 @@ OBJECT_LABELS = {
     "start": "Startmarkierung",
     "barrel": "Fass",
     "cone": "Pylone",
-    "barricade": "Barrikade",
     "light": "Licht",
     "note": "Notiz",
     "arrow": "Pfeil",
@@ -1331,8 +1494,9 @@ OBJECT_LABELS = {
 SYMBOL_THEME = SYMBOL_CONTRACT["objects"]
 RENDER_ORDER = {
     "wall": 10,
+    "window": 11,
+    "door": 12,
     "backstop": 20,
-    "barricade": 30,
     "barrel": 40,
     "cone": 40,
     "light": 40,
@@ -1392,7 +1556,8 @@ def stage_drawing(stage: dict, range_data: dict, max_w: float, max_h: float):
     ppm = float(range_data.get("pixelsPerMeter") or 32)
     for obj in ordered_objects:
         used.add(obj["type"])
-        add_object_to_drawing(drawing, obj, ox, oy, scale, draw_h, ppm)
+        draw_obj = {**obj, "properties": stage.get("lightSettings") or {}} if obj.get("type") == "light" else obj
+        add_object_to_drawing(drawing, draw_obj, ox, oy, scale, draw_h, ppm)
     for obj in ordered_objects:
         add_pdf_label(drawing, obj, ox, oy, scale, draw_h, ppm)
     return drawing, used
@@ -1438,8 +1603,8 @@ def get_boundary_segment_geometry(range_data: dict, side: str, meter_index: int)
 
 def get_object_geometry(obj: dict, scale: float, stage_origin_x: float, stage_origin_y: float, pixels_per_meter: float) -> dict:
     spec = SYMBOL_THEME.get(obj["type"], {})
-    real_w = max(0.1, float(obj["widthM"]))
-    real_h = max(0.1, float(obj["heightM"]))
+    real_w = max(0.02, float(obj["widthM"]))
+    real_h = max(0.02, float(obj["heightM"]))
     center_x = stage_origin_x + (float(obj["xM"]) + real_w / 2) * scale
     center_y = stage_origin_y + (float(obj["yM"]) + real_h / 2) * scale
     if spec.get("fixedVisual"):
@@ -1447,7 +1612,7 @@ def get_object_geometry(obj: dict, scale: float, stage_origin_x: float, stage_or
         width_px = float(spec.get("visualWidthPx", 16)) / ppm * scale
         height_px = float(spec.get("visualHeightPx", 16)) / ppm * scale
     else:
-        min_m = max(0.22, 20 / max(10.0, float(pixels_per_meter or 32)))
+        min_m = 0.02 if obj.get("type") in STRUCTURE_TYPES else max(0.22, 20 / max(10.0, float(pixels_per_meter or 32)))
         width_px = max(real_w, min_m) * scale
         height_px = max(real_h, min_m) * scale
     return {
@@ -1492,7 +1657,8 @@ def add_pdf_label(drawing, obj, ox, oy, scale, draw_h, pixels_per_meter):
 
 def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float, obj: dict | None = None):
     theme = SYMBOL_THEME.get(obj_type, {"fill": "#93c5fd", "stroke": "#111827"})
-    fill = colors.HexColor(theme["fill"])
+    fill_value = ((obj or {}).get("properties") or {}).get("color") if obj_type == "light" else None
+    fill = colors.HexColor(fill_value or theme["fill"])
     stroke = colors.HexColor(theme["stroke"])
     if obj_type == "target":
         variant = ((obj or {}).get("properties") or {}).get("targetVariant") or "full"
@@ -1514,13 +1680,26 @@ def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float,
     elif obj_type == "cone":
         group.add(Polygon([x + w * .5, y + h * .95, x + w * .88, y + h * .12, x + w * .12, y + h * .12], fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
         group.add(Line(x + w * .28, y + h * .38, x + w * .72, y + h * .38, strokeColor=stroke, strokeWidth=0.6))
-    elif obj_type == "barricade":
-        group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
-        for pos in (.25, .5, .75):
-            group.add(Line(x + w * pos, y, x + w * max(0, pos - .18), y + h, strokeColor=stroke, strokeWidth=0.5))
+    elif obj_type == "wall":
+        draw_pdf_wall(group, x, y, w, h, fill, stroke)
+    elif obj_type == "window":
+        draw_pdf_window(group, obj or {}, x, y, w, h, fill, stroke, colors.HexColor(theme.get("accent", "#dbeafe")))
+    elif obj_type == "door":
+        draw_pdf_door(group, obj or {}, x, y, w, h, fill, stroke)
     elif obj_type == "light":
         group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
-        group.add(Polygon([x + w * .5, y + h * .9, x + w * .36, y + h * .5, x + w * .5, y + h * .5, x + w * .42, y + h * .1, x + w * .68, y + h * .58, x + w * .52, y + h * .58], fillColor=stroke, strokeColor=stroke))
+        bx = x + w * 0.24
+        by = y + h * 0.18
+        bw = w * 0.52
+        bh = h * 0.64
+        group.add(Polygon([
+            bx + bw * .50, by + bh,
+            bx + bw * .30, by + bh * .55,
+            bx + bw * .48, by + bh * .55,
+            bx + bw * .38, by,
+            bx + bw * .72, by + bh * .48,
+            bx + bw * .54, by + bh * .48,
+        ], fillColor=stroke, strokeColor=stroke))
     elif obj_type == "arrow":
         group.add(Polygon([x, y + h * .34, x + w * .58, y + h * .34, x + w * .58, y + h * .14, x + w, y + h * .5, x + w * .58, y + h * .86, x + w * .58, y + h * .66, x, y + h * .66], fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
     elif obj_type == "popper":
@@ -1556,8 +1735,6 @@ def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float,
         group.add(Polygon([x + w * .5, y + h * .8, x + w * .42, y + h * .5, x + w * .5, y + h * .5, x + w * .56, y + h * .18, x + w * .68, y + h * .5, x + w * .52, y + h * .5], fillColor=stroke, strokeColor=stroke))
     else:
         group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
-        if obj_type == "wall":
-            group.add(Line(x, y + h / 2, x + w, y + h / 2, strokeColor=stroke, strokeWidth=0.8))
         if obj_type == "backstop":
             group.add(Polygon([x + w * .08, y + h * .15, x + w * .92, y + h * .15, x + w * .82, y + h * .85, x + w * .18, y + h * .85], fillColor=fill, strokeColor=stroke, strokeWidth=0.8))
             group.add(Line(x + w * .26, y + h * .5, x + w * .74, y + h * .5, strokeColor=colors.HexColor(theme.get("accent", "#fecaca")), strokeWidth=0.7))
@@ -1565,6 +1742,67 @@ def add_pdf_symbol(group, obj_type: str, x: float, y: float, w: float, h: float,
             group.add(Circle(x + w / 2, y + h / 2, min(w, h) * .26, fillColor=None, strokeColor=stroke, strokeWidth=0.8))
         if obj_type == "note":
             group.add(String(x + w * .25, y + h * .35, "T", fontSize=min(w, h) * .5, fillColor=stroke))
+
+
+def draw_pdf_wall(group, x: float, y: float, w: float, h: float, fill, stroke):
+    group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+
+
+def add_pdf_wall_segment(group, x: float, y: float, w: float, h: float, fill, stroke):
+    if w <= 0:
+        return
+    group.add(Rect(x, y, w, h, fillColor=fill, strokeColor=stroke, strokeWidth=0.7))
+
+
+def draw_pdf_window(group, obj: dict, x: float, y: float, w: float, h: float, fill, stroke, accent):
+    length_m = max(0.1, float(obj.get("widthM") or 1))
+    props = normalize_window_properties(obj.get("properties") or {}, length_m)
+    seg = get_opening_segments(length_m, props["openingWidthM"], props["openingPosition"], props["openingOffsetM"])
+    scale_x = w / length_m
+    open_x = x + seg["openingStartM"] * scale_x
+    open_w = props["openingWidthM"] * scale_x
+    add_pdf_wall_segment(group, x, y, seg["leftM"] * scale_x, h, fill, stroke)
+    add_pdf_wall_segment(group, x + seg["rightStartM"] * scale_x, y, seg["rightM"] * scale_x, h, fill, stroke)
+    group.add(Rect(open_x, y, open_w, h, fillColor=accent, strokeColor=stroke, strokeWidth=0.55))
+    group.add(Line(open_x, y + h / 2, open_x + open_w, y + h / 2, strokeColor=colors.HexColor("#60a5fa"), strokeWidth=0.45))
+
+
+def draw_pdf_door(group, obj: dict, x: float, y: float, w: float, h: float, fill, stroke):
+    length_m = max(0.1, float(obj.get("widthM") or 1))
+    props = normalize_door_properties(obj.get("properties") or {}, length_m)
+    seg = get_opening_segments(length_m, props["doorWidthM"], props["doorPosition"], props["openingOffsetM"])
+    scale_x = w / length_m
+    open_x = x + seg["openingStartM"] * scale_x
+    open_w = props["doorWidthM"] * scale_x
+    add_pdf_wall_segment(group, x, y, seg["leftM"] * scale_x, h, fill, stroke)
+    add_pdf_wall_segment(group, x + seg["rightStartM"] * scale_x, y, seg["rightM"] * scale_x, h, fill, stroke)
+    hinge_x = open_x if props["hingeSide"] == "left" else open_x + open_w
+    hinge_y = y + h / 2
+    side = 1 if props["swingDirection"] == "in" else -1
+    angle = math.radians(props["openAngle"])
+    theta = side * angle if props["hingeSide"] == "left" else math.pi - side * angle
+    end_x = hinge_x + math.cos(theta) * open_w
+    end_y = hinge_y + math.sin(theta) * open_w
+    closed_x = hinge_x + (open_w if props["hingeSide"] == "left" else -open_w)
+    sweep = 1 if (props["hingeSide"] == "left" and side > 0) or (props["hingeSide"] == "right" and side < 0) else 0
+    group.add(Line(hinge_x, hinge_y, end_x, end_y, strokeColor=stroke, strokeWidth=0.7))
+    group.add(Circle(hinge_x, hinge_y, max(0.7, h * .18), fillColor=stroke, strokeColor=stroke))
+    start_angle = 0 if props["hingeSide"] == "left" else math.pi
+    end_angle = theta
+    shortest = end_angle - start_angle
+    if sweep and shortest < 0:
+        shortest += math.tau
+    if not sweep and shortest > 0:
+        shortest -= math.tau
+    steps = max(8, int(abs(shortest) / (math.pi / 18)))
+    prev_x = hinge_x + math.cos(start_angle) * open_w
+    prev_y = hinge_y + math.sin(start_angle) * open_w
+    for step in range(1, steps + 1):
+        a = start_angle + shortest * step / steps
+        next_x = hinge_x + math.cos(a) * open_w
+        next_y = hinge_y + math.sin(a) * open_w
+        group.add(Line(prev_x, prev_y, next_x, next_y, strokeColor=stroke, strokeWidth=0.45))
+        prev_x, prev_y = next_x, next_y
 
 
 def add_pdf_target_variant_overlay(group, obj: dict, x: float, y: float, w: float, h: float, obj_type: str = "target"):
@@ -1634,6 +1872,23 @@ def legend_symbol(obj_type: str):
         d.add(Line(1 * mm, 3.5 * mm, 7 * mm, 3.5 * mm, strokeColor=colors.HexColor("#ef4444"), strokeWidth=3))
     elif obj_type == "empty":
         d.add(Rect(2 * mm, 2 * mm, 4 * mm, 3 * mm, fillColor=colors.HexColor("#e5e7eb"), strokeColor=colors.HexColor("#94a3b8"), strokeWidth=0.5))
+    elif obj_type == "door":
+        g = Group()
+        obj = {
+            "type": "door",
+            "widthM": 2.0,
+            "heightM": 0.2,
+            "properties": {
+                "doorWidthM": 0.9,
+                "doorPosition": "center",
+                "openingOffsetM": None,
+                "hingeSide": "left",
+                "swingDirection": "in",
+                "openAngle": 90,
+            },
+        }
+        add_pdf_symbol(g, "door", 1.1 * mm, 2.65 * mm, 5.8 * mm, 0.7 * mm, obj=obj)
+        d.add(g)
     else:
         g = Group()
         obj = {"type": obj_type, "properties": {"targetVariant": "no-shoot"}} if obj_type == "target_no_shoot" else None
@@ -1662,6 +1917,22 @@ def mag_text(section: dict) -> str:
             state = f"{mag.get('rounds') or 0} Schuss"
         lines.append(f"{mag['name']}: {state}")
     return "\n".join(lines) or "-"
+
+
+def lights_text(stage: dict) -> str:
+    lines = []
+    props = normalize_light_properties(stage.get("lightSettings") or {})
+    limit = LIGHT_TIMER_LABELS[props["timerValue"]] if props["limitType"] == "timer" else f"{props['counts']} Counts"
+    sensor = "an" if props["sensorMode"] else "aus"
+    config = (
+        f"{LIGHT_MODE_LABELS[props['mode']]}, {LIGHT_COLOR_LABELS[props['color']]}, "
+        f"Delay {props['delaySeconds']:.1f}s, Timeout {props['timeoutSeconds']:.1f}s, "
+        f"{limit}, Sensor {sensor}, Probability {props['probability']}%"
+    )
+    for index, obj in enumerate([item for item in stage.get("objects", []) if item.get("type") == "light"], start=1):
+        label = obj.get("label") or f"Licht {index}"
+        lines.append(f"{label}: {config}")
+    return "\n".join(lines)
 
 
 if is_production_mode():

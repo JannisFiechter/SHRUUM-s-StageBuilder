@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SHRUUM's StageBuilder</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v=structure-elements-3">
 </head>
 <body>
   <header class="topbar">
@@ -14,6 +14,14 @@
         <button id="newStageBtn" title="Neue Stage"><span class="btn-icn" aria-hidden="true">＋</span><span class="btn-txt">Neue Stage</span></button>
         <button id="saveStageBtn" class="primary" title="Speichern"><span class="btn-icn" aria-hidden="true">💾</span><span class="btn-txt">Speichern</span></button>
         <button id="loadStageBtn" title="Laden"><span class="btn-icn" aria-hidden="true">📂</span><span class="btn-txt">Laden</span></button>
+      </div>
+      <div class="actions action-group editor-actions">
+        <button id="undoBtn" type="button" title="Undo (Ctrl+Z)"><span class="btn-icn" aria-hidden="true">↶</span><span class="btn-txt">Undo</span></button>
+        <button id="redoBtn" type="button" title="Redo (Ctrl+Y)"><span class="btn-icn" aria-hidden="true">↷</span><span class="btn-txt">Redo</span></button>
+        <label class="snap-toggle" title="Snap-to-grid und Ausrichtungshilfen">
+          <input id="snapToggle" type="checkbox" checked>
+          <span>Snap</span>
+        </label>
       </div>
       <div class="actions action-group">
         <button id="pdfBtn" title="PDF Export"><span class="btn-icn" aria-hidden="true">📄</span><span class="btn-txt">PDF Export</span></button>
@@ -53,6 +61,8 @@
       <div class="toolbar-group-title">Grundobjekte</div>
       <button data-tool="select" class="active" title="Auswählen"><span>⌖</span><small>Auswahl</small></button>
       <button data-add="wall" title="Wand"><span>▰</span><small>Wand</small></button>
+      <button data-add="window" title="Fenster"><span>▭</span><small>Fenster</small></button>
+      <button data-add="door" title="Tür"><span>◜</span><small>Tür</small></button>
       <button data-add="backstop" title="Mobiler Kugelfang"><span>▣</span><small>Fang</small></button>
       <button data-add="start" title="Startmarkierung"><span>⚑</span><small>Start</small></button>
       <button data-add="note" title="Notiz"><span>✎</span><small>Notiz</small></button>
@@ -70,7 +80,6 @@
       <div class="toolbar-collapsible" data-collapse-group="props">
         <button data-add="barrel" title="Fass"><span>⬤</span><small>Fass</small></button>
         <button data-add="cone" title="Pylone"><span>▲</span><small>Pylone</small></button>
-        <button data-add="barricade" title="Barrikade"><span>▥</span><small>Barrikade</small></button>
         <button data-add="light" title="Licht"><span>⚡</span><small>Licht</small></button>
       </div>
     </aside>
@@ -168,6 +177,51 @@
         <div class="total-line">Total pro Schütze: <b id="roundsTotal">0</b></div>
         <label>Munitionsnotiz<textarea id="manualAmmoNote" rows="2"></textarea></label>
       </section>
+      <section id="lightSettingsPanel" class="panel" hidden>
+        <h2>Lichter</h2>
+        <label>Modus<select id="stageLightMode">
+          <option value="color">Color</option>
+          <option value="false-color">False Color</option>
+          <option value="delay">Delay</option>
+          <option value="timeout">Timeout</option>
+        </select></label>
+        <label>Farbe<select id="stageLightColor">
+          <option value="#FF2A2A">Rot</option>
+          <option value="#42C96A">Grün</option>
+          <option value="#3A84F7">Blau</option>
+          <option value="#D9C900">Gelb</option>
+          <option value="#C24AF5">Violett</option>
+          <option value="#25CFF5">Cyan</option>
+        </select></label>
+        <div class="grid2">
+          <label>Delay s<input id="stageLightDelay" type="number" min="0" step="0.1"></label>
+          <label>Timeout s<input id="stageLightTimeout" type="number" min="0" step="0.1"></label>
+        </div>
+        <div class="segmented">
+          <label><input type="radio" name="stageLightLimitType" value="timer"> Timer</label>
+          <label><input type="radio" name="stageLightLimitType" value="counts"> Counts</label>
+        </div>
+        <label id="stageLightTimerWrap">Timer<select id="stageLightTimer">
+          <option value="infinite">∞</option>
+          <option value="10">10 s</option>
+          <option value="15">15 s</option>
+          <option value="30">30 s</option>
+          <option value="45">45 s</option>
+          <option value="60">1 min</option>
+          <option value="120">2 min</option>
+          <option value="180">3 min</option>
+          <option value="300">5 min</option>
+          <option value="600">10 min</option>
+        </select></label>
+        <label id="stageLightCountsWrap">Counts<input id="stageLightCounts" type="number" min="1" step="1"></label>
+        <label class="check-row"><input id="stageLightSensorMode" type="checkbox"> Sensor Modus</label>
+        <label>Probability<select id="stageLightProbability">
+          <option value="0">0%</option><option value="10">10%</option><option value="20">20%</option>
+          <option value="30">30%</option><option value="40">40%</option><option value="50">50%</option>
+          <option value="60">60%</option><option value="70">70%</option><option value="80">80%</option>
+          <option value="90">90%</option><option value="100">100%</option>
+        </select></label>
+      </section>
       <section class="panel">
         <h2>Target-Nummerierung</h2>
         <label class="check-row"><input id="targetNumberingEnabled" type="checkbox"> automatisch nummerieren</label>
@@ -245,6 +299,23 @@
   <dialog id="loadDialog">
     <form method="dialog">
       <header><h2>Stage laden</h2><button value="cancel">×</button></header>
+      <div class="load-filters">
+        <label>Suche<input id="stageSearch" placeholder="Name, Ziel, Ablauf"></label>
+        <label>Schiesskeller<select id="stageFilterRange"></select></label>
+        <label>Waffe<select id="stageFilterWeapon">
+          <option value="">Alle Waffen</option>
+          <option value="kurzwaffe">Kurzwaffe</option>
+          <option value="langwaffe">Langwaffe</option>
+          <option value="kurzwaffe_langwaffe">Kurzwaffe + Langwaffe</option>
+        </select></label>
+        <label>Schwierigkeit<select id="stageFilterDifficulty">
+          <option value="">Alle Stufen</option>
+          <option>Leicht</option>
+          <option>Mittel</option>
+          <option>Schwer</option>
+        </select></label>
+        <label>Schwerpunkt<select id="stageFilterFocus"></select></label>
+      </div>
       <div id="stageList" class="list"></div>
     </form>
   </dialog>
@@ -265,6 +336,6 @@
   <script>
     window.SYMBOL_CONTRACT = {{ symbol_contract|tojson }};
   </script>
-  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}?v=structure-elements-3"></script>
 </body>
 </html>
