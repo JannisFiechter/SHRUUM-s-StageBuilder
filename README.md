@@ -16,7 +16,11 @@ Node 20 oder neuer.
 
 ## Hosting
 
-`dist/` ist statisch und kann überall liegen, auch in einem Unterordner (`base: "./"`). Für GitHub Pages reicht es, `dist/` zu veröffentlichen. Der Service Worker braucht HTTPS (oder localhost).
+`dist/` ist statisch und kann überall liegen, auch in einem Unterordner (`base: "./"`). Der Service Worker braucht HTTPS (oder localhost).
+
+### GitHub Pages
+
+Der Workflow `.github/workflows/pages.yml` testet, baut und veröffentlicht bei jedem Push auf `main`. Einmalig nötig: unter *Settings → Pages → Build and deployment* als Quelle «GitHub Actions» wählen.
 
 ## Funktionen
 
